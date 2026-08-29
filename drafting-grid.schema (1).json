@@ -1,0 +1,1101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.invalid/drafting-grid.schema.json",
+  "title": "Drafting Grid file formats",
+  "description": "Five documents share this schema, told apart by their app field: a drawing or template (drafting-grid), a symbol library (drafting-grid-symbols), a single layer (drafting-grid-layer), a full setup (drafting-grid-setup), and a bulk drawings export. All geometry is in millimetres with Y increasing upward, EXCEPT gx/gy which are in the display unit.",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/drawing"
+    },
+    {
+      "$ref": "#/definitions/library"
+    }
+  ],
+  "definitions": {
+    "point": {
+      "type": "object",
+      "required": [
+        "x",
+        "y"
+      ],
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      }
+    },
+    "colour": {
+      "type": "string",
+      "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
+    },
+    "styleFields": {
+      "color": {
+        "$ref": "#/definitions/colour"
+      },
+      "fill": {
+        "$ref": "#/definitions/colour"
+      },
+      "weight": {
+        "description": "Stroke width in mm. Legacy string names are still accepted.",
+        "oneOf": [
+          {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          {
+            "enum": [
+              "thin",
+              "normal",
+              "thick",
+              "xthick"
+            ]
+          }
+        ]
+      },
+      "dash": {
+        "enum": [
+          "solid",
+          "dashed",
+          "dotted",
+          "dashdot"
+        ]
+      },
+      "l": {
+        "type": "integer",
+        "description": "Layer id"
+      }
+    },
+    "poly": {
+      "type": "object",
+      "required": [
+        "t",
+        "p",
+        "l"
+      ],
+      "properties": {
+        "t": {
+          "const": "poly"
+        },
+        "p": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/definitions/point"
+          }
+        },
+        "cl": {
+          "type": "boolean",
+          "description": "Closed. The first point is NOT repeated at the end."
+        },
+        "color": {
+          "$ref": "#/definitions/colour"
+        },
+        "fill": {
+          "$ref": "#/definitions/colour"
+        },
+        "weight": {
+          "$ref": "#/definitions/styleFields/weight"
+        },
+        "dash": {
+          "$ref": "#/definitions/styleFields/dash"
+        },
+        "l": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer",
+          "description": "Assigned only when a link refers to it."
+        },
+        "label": {
+          "type": "string",
+          "description": "A name that moves with the object."
+        },
+        "lo": {
+          "$ref": "#/definitions/point",
+          "description": "Label offset from the bounding-box centre, mm."
+        },
+        "lsize": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Label height in mm."
+        },
+        "hatch": {
+          "enum": [
+            "none",
+            "d45",
+            "d135",
+            "cross",
+            "horiz",
+            "vert",
+            "grid",
+            "brick",
+            "dots"
+          ]
+        },
+        "hs": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Hatch spacing in mm."
+        },
+        "curve": {
+          "type": "boolean",
+          "description": "Draw a smooth path through the points."
+        },
+        "head": {
+          "$ref": "#/definitions/lineEnd"
+        },
+        "tail": {
+          "$ref": "#/definitions/lineEnd"
+        },
+        "ahs": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Line-end size in mm."
+        }
+      }
+    },
+    "rect": {
+      "type": "object",
+      "required": [
+        "t",
+        "x",
+        "y",
+        "w",
+        "h",
+        "l"
+      ],
+      "properties": {
+        "t": {
+          "const": "rect"
+        },
+        "x": {
+          "type": "number",
+          "description": "Lower-left corner X (Y axis points up)"
+        },
+        "y": {
+          "type": "number",
+          "description": "Lower-left corner Y"
+        },
+        "w": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "h": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "color": {
+          "$ref": "#/definitions/colour"
+        },
+        "fill": {
+          "$ref": "#/definitions/colour"
+        },
+        "weight": {
+          "$ref": "#/definitions/styleFields/weight"
+        },
+        "dash": {
+          "$ref": "#/definitions/styleFields/dash"
+        },
+        "l": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer",
+          "description": "Assigned only when a link refers to it."
+        },
+        "label": {
+          "type": "string",
+          "description": "A name that moves with the object."
+        },
+        "lo": {
+          "$ref": "#/definitions/point",
+          "description": "Label offset from the bounding-box centre, mm."
+        },
+        "lsize": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Label height in mm."
+        },
+        "hatch": {
+          "enum": [
+            "none",
+            "d45",
+            "d135",
+            "cross",
+            "horiz",
+            "vert",
+            "grid",
+            "brick",
+            "dots"
+          ]
+        },
+        "hs": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Hatch spacing in mm."
+        }
+      }
+    },
+    "circle": {
+      "type": "object",
+      "required": [
+        "t",
+        "c",
+        "r",
+        "l"
+      ],
+      "properties": {
+        "t": {
+          "const": "circle"
+        },
+        "c": {
+          "$ref": "#/definitions/point"
+        },
+        "r": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "color": {
+          "$ref": "#/definitions/colour"
+        },
+        "fill": {
+          "$ref": "#/definitions/colour"
+        },
+        "weight": {
+          "$ref": "#/definitions/styleFields/weight"
+        },
+        "dash": {
+          "$ref": "#/definitions/styleFields/dash"
+        },
+        "l": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer",
+          "description": "Assigned only when a link refers to it."
+        },
+        "label": {
+          "type": "string",
+          "description": "A name that moves with the object."
+        },
+        "lo": {
+          "$ref": "#/definitions/point",
+          "description": "Label offset from the bounding-box centre, mm."
+        },
+        "lsize": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Label height in mm."
+        },
+        "hatch": {
+          "enum": [
+            "none",
+            "d45",
+            "d135",
+            "cross",
+            "horiz",
+            "vert",
+            "grid",
+            "brick",
+            "dots"
+          ]
+        },
+        "hs": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Hatch spacing in mm."
+        }
+      }
+    },
+    "arc": {
+      "type": "object",
+      "required": [
+        "t",
+        "c",
+        "r",
+        "a0",
+        "sw",
+        "l"
+      ],
+      "properties": {
+        "t": {
+          "const": "arc"
+        },
+        "c": {
+          "$ref": "#/definitions/point"
+        },
+        "r": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "a0": {
+          "type": "number",
+          "description": "Start angle, radians, CCW from +X"
+        },
+        "sw": {
+          "type": "number",
+          "description": "Signed sweep in radians. Negative sweeps clockwise. Must not be 0."
+        },
+        "color": {
+          "$ref": "#/definitions/colour"
+        },
+        "weight": {
+          "$ref": "#/definitions/styleFields/weight"
+        },
+        "dash": {
+          "$ref": "#/definitions/styleFields/dash"
+        },
+        "l": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer",
+          "description": "Assigned only when a link refers to it."
+        },
+        "label": {
+          "type": "string",
+          "description": "A name that moves with the object."
+        },
+        "lo": {
+          "$ref": "#/definitions/point",
+          "description": "Label offset from the bounding-box centre, mm."
+        },
+        "lsize": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Label height in mm."
+        }
+      }
+    },
+    "text": {
+      "type": "object",
+      "required": [
+        "t",
+        "p",
+        "str",
+        "l"
+      ],
+      "properties": {
+        "t": {
+          "const": "text"
+        },
+        "p": {
+          "$ref": "#/definitions/point",
+          "description": "Baseline start of the first glyph"
+        },
+        "str": {
+          "type": "string"
+        },
+        "size": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Cap height in mm. Default 3.5."
+        },
+        "rot": {
+          "type": "number",
+          "description": "Radians, CCW. Default 0."
+        },
+        "mir": {
+          "type": "boolean",
+          "description": "Reflect the local X axis: genuinely mirrored lettering."
+        },
+        "color": {
+          "$ref": "#/definitions/colour"
+        },
+        "l": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer",
+          "description": "Assigned only when a link refers to it."
+        },
+        "label": {
+          "type": "string",
+          "description": "A name that moves with the object."
+        },
+        "lo": {
+          "$ref": "#/definitions/point",
+          "description": "Label offset from the bounding-box centre, mm."
+        },
+        "lsize": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Label height in mm."
+        }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": [
+        "t",
+        "items",
+        "l"
+      ],
+      "properties": {
+        "t": {
+          "const": "group"
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/entityOrMeasure"
+          }
+        },
+        "merged": {
+          "type": "boolean",
+          "description": "When true, Ungroup refuses."
+        },
+        "l": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer",
+          "description": "Assigned only when a link refers to it."
+        },
+        "label": {
+          "type": "string",
+          "description": "A name that moves with the object."
+        },
+        "lo": {
+          "$ref": "#/definitions/point",
+          "description": "Label offset from the bounding-box centre, mm."
+        },
+        "lsize": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Label height in mm."
+        }
+      }
+    },
+    "lengthMeasure": {
+      "type": "object",
+      "required": [
+        "a",
+        "b",
+        "l"
+      ],
+      "not": {
+        "required": [
+          "t"
+        ]
+      },
+      "description": "Identified by having a and b and NO t field.",
+      "properties": {
+        "a": {
+          "$ref": "#/definitions/point"
+        },
+        "b": {
+          "$ref": "#/definitions/point"
+        },
+        "off": {
+          "type": "number",
+          "description": "Signed perpendicular stand-off in mm. 0 puts the line on the geometry."
+        },
+        "color": {
+          "$ref": "#/definitions/colour"
+        },
+        "weight": {
+          "$ref": "#/definitions/styleFields/weight"
+        },
+        "dash": {
+          "$ref": "#/definitions/styleFields/dash"
+        },
+        "l": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "lo": {
+          "$ref": "#/definitions/point"
+        },
+        "lsize": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "angleMeasure": {
+      "type": "object",
+      "required": [
+        "t",
+        "vertex",
+        "a",
+        "b",
+        "l"
+      ],
+      "properties": {
+        "t": {
+          "const": "angle"
+        },
+        "vertex": {
+          "$ref": "#/definitions/point"
+        },
+        "a": {
+          "$ref": "#/definitions/point",
+          "description": "A point on the first leg"
+        },
+        "b": {
+          "$ref": "#/definitions/point",
+          "description": "A point on the second leg"
+        },
+        "r": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Arc radius in mm. Defaults to 35% of the shorter leg."
+        },
+        "color": {
+          "$ref": "#/definitions/colour"
+        },
+        "weight": {
+          "$ref": "#/definitions/styleFields/weight"
+        },
+        "dash": {
+          "$ref": "#/definitions/styleFields/dash"
+        },
+        "l": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "lo": {
+          "$ref": "#/definitions/point"
+        },
+        "lsize": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "entity": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/poly"
+        },
+        {
+          "$ref": "#/definitions/rect"
+        },
+        {
+          "$ref": "#/definitions/circle"
+        },
+        {
+          "$ref": "#/definitions/arc"
+        },
+        {
+          "$ref": "#/definitions/text"
+        },
+        {
+          "$ref": "#/definitions/group"
+        },
+        {
+          "$ref": "#/definitions/link"
+        }
+      ]
+    },
+    "entityOrMeasure": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/poly"
+        },
+        {
+          "$ref": "#/definitions/rect"
+        },
+        {
+          "$ref": "#/definitions/circle"
+        },
+        {
+          "$ref": "#/definitions/arc"
+        },
+        {
+          "$ref": "#/definitions/text"
+        },
+        {
+          "$ref": "#/definitions/group"
+        },
+        {
+          "$ref": "#/definitions/angleMeasure"
+        },
+        {
+          "$ref": "#/definitions/lengthMeasure"
+        },
+        {
+          "$ref": "#/definitions/link"
+        }
+      ]
+    },
+    "measure": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/angleMeasure"
+        },
+        {
+          "$ref": "#/definitions/lengthMeasure"
+        }
+      ]
+    },
+    "layer": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "color"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "color": {
+          "$ref": "#/definitions/colour"
+        },
+        "vis": {
+          "type": "boolean"
+        },
+        "lock": {
+          "type": "boolean"
+        },
+        "guide": {
+          "type": "boolean",
+          "description": "Construction layer: dashed by default and EXCLUDED from SVG export and printing."
+        }
+      }
+    },
+    "drawing": {
+      "type": "object",
+      "required": [
+        "app",
+        "gx",
+        "gy",
+        "view"
+      ],
+      "properties": {
+        "app": {
+          "const": "drafting-grid"
+        },
+        "v": {
+          "type": "integer",
+          "description": "Written as 2. Currently never read by the loader."
+        },
+        "unit": {
+          "enum": [
+            "mm",
+            "cm",
+            "m",
+            "in",
+            "ft",
+            "px"
+          ]
+        },
+        "gx": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Grid interval in the DISPLAY unit, not mm."
+        },
+        "gy": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "uniform": {
+          "type": "boolean"
+        },
+        "major": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "view": {
+          "type": "object",
+          "required": [
+            "cx",
+            "cy",
+            "zoom"
+          ],
+          "properties": {
+            "cx": {
+              "type": "number"
+            },
+            "cy": {
+              "type": "number"
+            },
+            "zoom": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Screen px per mm. Clamped to 0.001-4000 on use."
+            }
+          }
+        },
+        "layers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/layer"
+          }
+        },
+        "cur": {
+          "type": "integer"
+        },
+        "nextLayer": {
+          "type": "integer"
+        },
+        "snaps": {
+          "type": "object",
+          "properties": {
+            "grid": {
+              "type": "boolean"
+            },
+            "end": {
+              "type": "boolean"
+            },
+            "mid": {
+              "type": "boolean"
+            },
+            "center": {
+              "type": "boolean"
+            },
+            "inter": {
+              "type": "boolean"
+            },
+            "perp": {
+              "type": "boolean"
+            },
+            "near": {
+              "type": "boolean"
+            }
+          }
+        },
+        "snapOn": {
+          "type": "boolean"
+        },
+        "ortho": {
+          "type": "boolean"
+        },
+        "polar": {
+          "type": "boolean"
+        },
+        "pinc": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "keys": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "showDelta": {
+          "type": "boolean"
+        },
+        "showGrid": {
+          "type": "boolean"
+        },
+        "showArea": {
+          "type": "boolean"
+        },
+        "gridInSvg": {
+          "type": "boolean"
+        },
+        "scrollPan": {
+          "type": "boolean"
+        },
+        "segMode": {
+          "type": "boolean"
+        },
+        "snapFollowsZoom": {
+          "type": "boolean"
+        },
+        "nudgeStep": {
+          "type": "number",
+          "minimum": 0
+        },
+        "polySides": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 64
+        },
+        "textSize": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "library": {
+          "type": "string",
+          "description": "Name of the symbol set this drawing expects."
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/entity"
+          }
+        },
+        "measures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/measure"
+          }
+        },
+        "uid": {
+          "type": "string",
+          "description": "Stable identity for this drawing. Not carried by templates."
+        },
+        "nextId": {
+          "type": "integer",
+          "description": "Next object id to hand out. Raised past the highest id present on load."
+        },
+        "tool": {
+          "type": "string"
+        },
+        "rotIndividually": {
+          "type": "boolean"
+        },
+        "autosave": {
+          "type": "boolean"
+        },
+        "sheet": {
+          "type": "object",
+          "description": "Page border and title block, in real millimetres.",
+          "properties": {
+            "on": {
+              "type": "boolean"
+            },
+            "size": {
+              "enum": [
+                "A4",
+                "A3",
+                "A2",
+                "A1",
+                "A0"
+              ]
+            },
+            "land": {
+              "type": "boolean"
+            },
+            "margin": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "block": {
+              "type": "boolean"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "placed": {
+              "type": "boolean"
+            }
+          }
+        },
+        "title": {
+          "type": "object",
+          "description": "Title-block fields.",
+          "properties": {
+            "project": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "number": {
+              "type": "string"
+            },
+            "rev": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "string"
+            },
+            "date": {
+              "type": "string"
+            },
+            "drawn": {
+              "type": "string"
+            },
+            "checked": {
+              "type": "string"
+            },
+            "sheet": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "symbol": {
+      "type": "object",
+      "required": [
+        "name",
+        "items"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/entityOrMeasure"
+          },
+          "description": "Normalised so the bounding box minimum sits at (0,0)."
+        },
+        "w": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Bounding width in mm. May be 0 for a vertical line."
+        },
+        "h": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "library": {
+      "type": "object",
+      "required": [
+        "app",
+        "symbols"
+      ],
+      "properties": {
+        "app": {
+          "const": "drafting-grid-symbols"
+        },
+        "v": {
+          "type": "integer"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string",
+          "description": "Library name. Determines which named set it loads into."
+        },
+        "symbols": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/symbol"
+          }
+        }
+      }
+    },
+    "lineEnd": {
+      "enum": [
+        "none",
+        "arrow",
+        "open",
+        "hollow",
+        "dot",
+        "bar"
+      ]
+    },
+    "linkEnd": {
+      "type": "object",
+      "description": "One end of a link: an object id, or a bare point.",
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "fx": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "Pinned port, fraction of half-width."
+        },
+        "fy": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "gap": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Clearance from the object edge, mm."
+        }
+      }
+    },
+    "link": {
+      "type": "object",
+      "required": [
+        "t",
+        "a",
+        "b",
+        "l"
+      ],
+      "description": "A connector. Stores no coordinates: both ends resolve at draw time from wherever the objects are now.",
+      "properties": {
+        "t": {
+          "const": "link"
+        },
+        "a": {
+          "$ref": "#/definitions/linkEnd"
+        },
+        "b": {
+          "$ref": "#/definitions/linkEnd"
+        },
+        "via": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/point"
+          },
+          "description": "Waypoints, in order."
+        },
+        "curve": {
+          "type": "boolean"
+        },
+        "head": {
+          "$ref": "#/definitions/lineEnd"
+        },
+        "tail": {
+          "$ref": "#/definitions/lineEnd"
+        },
+        "ahs": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "label": {
+          "type": "string"
+        },
+        "lo": {
+          "$ref": "#/definitions/point"
+        },
+        "lsize": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "color": {
+          "$ref": "#/definitions/colour"
+        },
+        "weight": {
+          "$ref": "#/definitions/styleFields/weight"
+        },
+        "dash": {
+          "$ref": "#/definitions/styleFields/dash"
+        },
+        "l": {
+          "type": "integer"
+        }
+      }
+    }
+  },
+  "version": "3.1",
+  "$comment": "Schema revision 3.1, 2026-08-29. Matches app version 3.1."
+}
