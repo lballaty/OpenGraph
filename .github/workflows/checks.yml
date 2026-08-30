@@ -1,0 +1,43 @@
+name: checks
+
+# Runs on every push and pull request. The point is that it does not depend on anyone
+# remembering: a change that breaks the structure, or a version that does not match the
+# changelog, fails here rather than on the iPad.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Structural checks
+        run: node checks.js index.html
+
+      - name: Script parses
+        run: |
+          node -e '
+            const fs=require("fs");
+            const s=fs.readFileSync("index.html","utf8");
+            const js=s.slice(s.indexOf("<script>")+8,s.lastIndexOf("</script>"));
+            new Function(js);
+            console.log("script parses (" + Math.round(js.length/1024) + "KB)");
+          '
+
+      - name: Shipped files match the schema
+        run: |
+          npm install --no-save ajv-cli@5 >/dev/null 2>&1
+          fail=0
+          for f in starter/*.json samples/*.json; do
+            [ -e "$f" ] || continue
+            npx ajv-cli validate -s drafting-grid.schema.json -d "$f" --strict=false >/dev/null 2>&1 \
+              || { echo "FAIL $f"; fail=1; }
+          done
+          [ $fail -eq 0 ] && echo "all shipped files validate"
+          exit $fail
