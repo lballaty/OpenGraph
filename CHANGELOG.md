@@ -4,6 +4,87 @@ The **This build** line in Settings → About is a hash of the file's own conten
 Two copies showing the same one are the same file. Use it to tell builds apart —
 the version number alone will not, since several ship on the same date.
 
+## 3.44.0 — 2026-09-01 · build `871cf47e`
+
+### Dragging kept grabbing a handle instead
+Both tolerances were **22px on touch** — the same — and handles are tested first. But
+a vertex sits *on* the object, so any press near a corner was inside both and the
+handle always won.
+
+On anything smaller than about 100px across, **every** point is within 22px of some
+vertex. So a small object could not be dragged at all; it could only be resized. The
+smaller the thing, the less able you were to move it, which is the opposite of what
+anyone expects.
+
+| | object | handle before | handle after |
+|---|---|---|---|
+| touch | 22 px | 22 px | **13 px** |
+| mouse | 11 px | 12 px | **8 px** |
+
+Grabbing a particular vertex is a precise act and deserves a precise tolerance;
+moving is the common one and keeps the generous ring. The object tolerance is
+unchanged — selecting should not get harder to fix dragging.
+
+### Two cases the tolerance alone does not solve
+**A crowd of handles.** On a polyline with vertices a few pixels apart, whichever is
+nearest is effectively arbitrary — you cannot have meant a particular one. More than
+three within reach now defers to moving.
+
+**An object too small to offer both.** Below about 33px on screen there is no ring
+left, so it would still only resize. The handle stands aside and says why, because
+zooming in is the real answer and is not obvious from the symptom:
+
+> *"That object is too small on screen to grab a single point — zoom in to edit its
+> corners. For now the press moves it."*
+
+726 tests.
+
+## 3.43.0 — 2026-09-01 · build `79e75154`
+
+### Three caches were thrashing, and I had read it as expensive work
+```
+index rebuild      5046ms ×575   (8.78ms each)
+segments rebuild    353ms ×448
+flatten rebuild      19ms ×418
+```
+
+Against **33** actual geometry changes. `index rebuild 5046ms ×575` reads as an
+expensive operation, and I read it that way until the call count gave it away. Two
+separate causes, both mine.
+
+**The spatial index had one slot with an `all` flag.** Snapping asks for the visible
+set; the hit test asks for everything — and since 3.41.0 both run per interaction, so
+every alternation rebuilt the whole index. It made both callers **worse than before
+they used the index at all**: hit test 2.97ms → 11.06ms, snapping 1.86ms → 3.31ms.
+
+Two slots now, which is the pattern `segments()` already used — I copied it and
+dropped the part that mattered.
+
+**A handle drag called `segsDirty()` every frame**, which bumps the geometry version
+and so invalidates all three caches at once. The stale entry is the one already being
+ignored: the dragged object is passed to `snapPoint` as `ignore`, so its own segments
+are filtered out regardless, and nothing else has moved. Invalidated **once**, when
+the drag ends.
+
+### The profiler now names a thrashing cache
+A timing breakdown cannot show one — the total looks like slow work. It now compares
+rebuilds against geometry changes and says so:
+
+```
+⚠ spatial index rebuilt 575 times for about 33 geometry changes
+  — the cache is thrashing, not the work being expensive
+```
+
+All three from your report would have been flagged; the healthy earlier runs stay
+quiet.
+
+### Confirmed working from the same report
+`handles hidden: 41444 would be drawn, over the 600 limit` — and the overlay came down
+to **0.30ms from 16.00ms**. `intersection snapping limited to the 400 nearest` — no
+stand-down. **DXF export 33ms** for a 2.9MB file, so that question is closed too.
+
+715 tests.
+
 ## 3.42.0 — 2026-09-01 · build `508fd64c`
 
 ### The overlay was 16ms a frame with a large selection

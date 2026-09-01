@@ -3588,7 +3588,16 @@ window.draftingGrid={
    Cell size is set from the average segment length so a segment spans about one cell --
    too small and long segments register in hundreds of cells, too large and a query returns
    everything, which is the case being escaped. */
-let segIndex=null, segIndexVer=-1, segIndexAll=false;
+/* TWO slots, one per variant, exactly as segments() has. A single slot with an `all` flag
+   thrashed: snapping asks for the visible set, the hit test asks for everything, and from
+   3.41.0 both ran per interaction -- so every alternation rebuilt the whole index. A device
+   report showed 575 rebuilds where the geometry had changed 33 times, at 8.78ms each, and
+   it made the two callers WORSE than before they used the index at all: the hit test went
+   from 2.97ms to 11.06ms, snapping from 1.86ms to 3.31ms.
+
+   I copied the caching pattern from segments() and then dropped the part that mattered. */
+let segIndexVis=null, segIndexVisVer=-1;
+let segIndexAllC=null, segIndexAllVer=-1;
 function buildSegIndex(segs){
   if(!segs.length)return{cell:1,map:new Map(),segs};
   /* Average segment length decides the cell. Sampled rather than summed: at 38,754
@@ -3623,14 +3632,15 @@ function buildSegIndex(segs){
   return{cell,map,segs};
 }
 function segIndexFor(all){
-  const segs=segments(all);
-  if(!segIndex||segIndexVer!==geomVersion||segIndexAll!==!!all){
-    const t0=profStart("index rebuild");
-    segIndex=buildSegIndex(segs);
-    segIndexVer=geomVersion;segIndexAll=!!all;
-    profEnd("index rebuild",t0);
-  }
-  return segIndex;
+  const cached=all?(segIndexAllVer===geomVersion&&segIndexAllC)
+                  :(segIndexVisVer===geomVersion&&segIndexVis);
+  if(cached)return cached;
+  const t0=profStart("index rebuild");
+  const ix=buildSegIndex(segments(all));
+  if(all){segIndexAllC=ix;segIndexAllVer=geomVersion;}
+  else{segIndexVis=ix;segIndexVisVer=geomVersion;}
+  profEnd("index rebuild",t0);
+  return ix;
 }
 /* Segments whose bounding box comes within tol of p. Returns the actual segment objects,
    so callers need no other change than swapping their loop source. */
@@ -3870,9 +3880,11 @@ function profReport(reason){
   L.push("   nodes drawn          "+nodesTotal().toLocaleString()+
     " visible, "+nodeHidden.toLocaleString()+" hidden");
   L.push("   segment list         "+(segCache?segCache.length.toLocaleString():"not built"));
-  L.push("   spatial index        "+(segIndex
-    ?segIndex.map.size.toLocaleString()+" cells, cell "+fmtBig(segIndex.cell)
-    :"not built"));
+  /* Both slots reported, because a single figure hid the thrash: one number looked healthy
+     while the two variants were evicting each other 575 times. */
+  const ixLine=ix=>ix?ix.map.size.toLocaleString()+" cells, cell "+fmtBig(ix.cell):"not built";
+  L.push("   index, visible set   "+ixLine(segIndexVis));
+  L.push("   index, all entities  "+ixLine(segIndexAllC));
   try{
     const m=performance&&performance.memory;
     L.push("   JS heap              "+(m&&m.usedJSHeapSize
@@ -3890,6 +3902,19 @@ function profReport(reason){
     onceKeys.sort((a,b)=>ONCE[b].ms-ONCE[a].ms).forEach(k=>
       L.push("   "+k.padEnd(24)+(ONCE[k].ms/ONCE[k].n).toFixed(0)+"ms each \u00d7"+ONCE[k].n));
   }
+  /* Cache health, because a thrashing cache is invisible in a timing breakdown: "index
+     rebuild 5046ms x575" looked like an expensive operation rather than a cache evicting
+     itself, and I read it as the former until the call count gave it away. A rebuild count
+     far above the number of geometry changes IS the signature, so it is stated. */
+  const geomChanges=Math.max(1,PROF.count["undo snapshot"]||1);
+  [["segments rebuild","segment list"],["index rebuild","spatial index"],
+   ["flatten rebuild","flattened list"]].forEach(([k,label])=>{
+    const n=PROF.count[k]||0;
+    if(!n)return;
+    const ratio=n/geomChanges;
+    if(ratio>4)L.push("   \u26a0 "+label+" rebuilt "+n+" times for about "+geomChanges+
+      " geometry changes \u2014 the cache is thrashing, not the work being expensive");
+  });
   L.push("architecture questions, from this run:");
   if(!PROF.frames)L.push("   (nothing measured yet \u2014 draw something with measurement on)");
   else{
@@ -4260,6 +4285,11 @@ const MIN_STEP_PX=1;
    clipping one at the screen edge is a visible bug traded for an invisible saving. */
 /* 600 handles is about 0.25ms and far more than anyone can distinguish on screen. */
 const HANDLE_MAX=600;
+/* Three handles within the grab radius is already a crowd: at that density the nearest is
+   arbitrary, and picking one at random is worse than moving the object, which is at least
+   what most presses mean. */
+const HANDLE_AMBIGUOUS=3;
+let tinyHandleAt=0;
 let handleCapNoted=false;
 const CULL_PAD_PX=120;
 const GRID_MIN_PX=4;   // the app's existing legibility threshold -- decimation is the only change
@@ -5014,13 +5044,46 @@ function hasNoSegments(e){
   return false;
 }
 function handleAt(sp){
-  const tol=COARSE?22:12;
+  /* Tighter than the object tolerance, and deliberately so. Both were 22px on touch, and
+     handles are checked FIRST -- but a vertex sits ON the object, so any press near a
+     corner was inside both and the handle always won. On anything smaller than about 100px
+     across, EVERY point is within 22px of some vertex, so a small object could not be
+     dragged at all: it could only be resized. The smaller the thing, the less able you were
+     to move it, which is the opposite of what anyone expects.
+
+     Grabbing a specific vertex is a precise act and deserves a precise tolerance; moving is
+     the common one and gets the generous ring. */
+  const tol=COARSE?13:8;
   let best=null,bd=tol;
+  /* A crowd of handles within reach means you cannot have meant a particular one -- on a
+     polyline with vertices a few pixels apart, whichever is nearest is effectively
+     arbitrary. Counted, and treated as ambiguous rather than guessed at. */
+  let within=0;
   for(const o of S.sel){
     if(!canSelect(o))continue;
     for(const h of handlesOf(o)){
       const d=dist(toS(h.p),sp);
+      if(d<tol)within++;
       if(d<bd){bd=d;best={o,k:h.k,i:h.i};}
+    }
+  }
+  if(within>HANDLE_AMBIGUOUS)return null;   // let the press move the object instead
+  /* An object smaller than the grab radius cannot offer both actions: every point on it is
+     within reach of a handle, so it can be resized and never moved. Rather than let someone
+     fight it, the handle stands aside and it says why -- zooming in is the real answer and
+     is not obvious from the symptom. */
+  if(best){
+    const b=objBBox(best.o);
+    if(b){
+      const wpx=(b.mxx-b.mnx)*S.view.zoom, hpx=(b.mxy-b.mny)*S.view.zoom;
+      if(Math.max(wpx,hpx)<tol*2.5){
+        if(Date.now()-tinyHandleAt>4000){
+          tinyHandleAt=Date.now();
+          note("That object is too small on screen to grab a single point \u2014 zoom in to edit "+
+            "its corners. For now the press moves it.");
+        }
+        return null;
+      }
     }
   }
   return best;
@@ -5891,7 +5954,18 @@ function applyHandle(p){
   else if(k==="aor"){o.r=Math.max(dist(o.vertex,p),1e-4);}
   if(k==="v"||k==="ma"||k==="mb"||k==="c")
     drag.stick.forEach(st=>{st.m[st.w]={x:p.x,y:p.y};});
-  segsDirty();   // a drag moves geometry every frame
+  /* dragVersion, not segsDirty. segsDirty bumps geomVersion, which invalidates the segment
+     list, the spatial index AND the flattened list -- all three rebuilt on every frame of a
+     handle drag. A device report showed 448, 575 and 418 rebuilds against 33 actual
+     geometry changes, and the index rebuild alone cost five seconds.
+
+     The stale entry is the one already being ignored: the object under the handle is passed
+     to snapPoint as `ignore`, so its own segments are filtered out of every candidate list
+     regardless of whether they are current. Everything else in the drawing is unchanged.
+
+     So the picture is invalidated per frame and the caches are invalidated once, when the
+     drag ends. */
+  dragVersion++;
 }
 /* A nudge always moves the selection by a real distance, but at a far-out zoom that
    distance can land under one screen pixel -- the object moves and nothing visibly
@@ -6320,6 +6394,9 @@ function endPtr(e){
   }
   if(drag){
     if(!drag.dirty)past.pop();
+    /* Here, once: the caches were left alone during the drag, so this is where they have to
+       be told. Guarded on dirty because a drag that moved nothing changed nothing. */
+    if(drag.dirty)segsDirty();
     drag=null;downPt=null;draw();return;
   }
   if(wasPan||spaceDown){downPt=null;return;}
@@ -7458,8 +7535,8 @@ const LIB_PREFIX="dg:lib:";   // one key per named library, so sets stay separab
    you have to remember -- and several builds shipped on the same date anyway, so neither
    answered "which copy am I looking at". A content hash cannot drift: two files showing
    the same one ARE the same file. */
-const APP_NAME="Drafting Grid", APP_VERSION="3.42.0", APP_BUILD="2026-08-29";
-const APP_HASH="508fd64c";
+const APP_NAME="Drafting Grid", APP_VERSION="3.44.0", APP_BUILD="2026-08-29";
+const APP_HASH="871cf47e";
 const AUTO_KEY="dg:auto";
 const APP_DOC="drafting-grid";
 const LAYER_APP="drafting-grid-layer";   // one layer and its contents, as a file

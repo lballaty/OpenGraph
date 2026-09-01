@@ -637,6 +637,93 @@ G("Tab tracking");
     /setInterval\(beatTab,TAB_BEAT_MS\)/.test(srcAll));
 }
 
+// ---------- grabbing a handle versus dragging ----------
+G("Handle versus drag");
+{
+  /* Reported: trying to drag grabbed a handle and resized instead. Both tolerances were
+     22px on touch and handles are checked FIRST -- but a vertex sits ON the object, so any
+     press near a corner was inside both and the handle always won. On anything under about
+     100px across every point is within 22px of some vertex, so a small object could not be
+     dragged at all. The smaller the thing, the less able you were to move it. */
+  const ha=codeOf("handleAt");
+  ok("the handle tolerance is tighter than the object's",/COARSE\?13:8/.test(ha),
+    "grabbing a vertex is precise; moving is the common act and gets the generous ring");
+  ok("the object tolerance is unchanged",/COARSE\?22:11/.test(codeOf("hitAtInner")),
+    "selecting should not become harder to fix dragging");
+  // the ring that now exists
+  const inRing=(sizePx,handleTol)=>sizePx>handleTol*2;
+  ok("a 60px object can now be dragged",inRing(60,13));
+  /* 30 > 26, so a 30px object technically has a ring — 6 pixels of it, which is not usable
+     on a finger. That is what the separate too-small rule is for, and it triggers below
+     32.5px rather than below 26. My assertion conflated the two thresholds. */
+  ok("a 30px object has only a useless sliver of ring",30-13*2<8,
+    "6 pixels is not a target anyone can hit");
+  ok("and the too-small rule catches it",30<13*2.5,
+    "which is why it defers and says to zoom in");
+  /* A crowd of handles means no particular one was meant. */
+  ok("a crowd of handles defers to moving",/within>HANDLE_AMBIGUOUS/.test(ha),
+    "on a dense polyline whichever is nearest is arbitrary");
+  ok("the crowd threshold is small",/HANDLE_AMBIGUOUS=3/.test(srcAll));
+  /* And an object too small to offer both actions says so. */
+  ok("an object smaller than the grab radius defers",
+    /Math\.max\(wpx,hpx\)<tol\*2\.5/.test(ha));
+  ok("and explains that zooming in is the answer",/zoom in to edit/.test(ha),
+    "the remedy is not obvious from the symptom");
+  ok("said at most every few seconds",/tinyHandleAt/.test(ha));
+  // counted the other way: does a real handle still work?
+  ok("a press on a corner of a large object still grabs it",inRing(400,13));
+}
+
+// ---------- cache thrashing ----------
+G("Cache thrashing");
+{
+  /* A device report showed three caches rebuilding far more often than the geometry
+     changed: index 575, segments 448, flatten 418, against 33 undo snapshots. Two separate
+     causes, both mine. */
+
+  /* 1. The spatial index had ONE slot with an `all` flag. Snapping asks for the visible
+        set, the hit test asks for everything, and from 3.41.0 both ran per interaction --
+        so every alternation rebuilt it. It made both callers WORSE than before they used
+        the index: hit test 2.97ms to 11.06ms, snapping 1.86ms to 3.31ms. */
+  ok("the index keeps a slot per variant",
+    /let segIndexVis=null[\s\S]{0,120}let segIndexAllC=null/.test(srcAll),
+    "one slot with a flag thrashes when two callers want different variants");
+  ok("neither slot evicts the other",
+    /if\(all\)\{segIndexAllC=ix;[\s\S]{0,80}else\{segIndexVis=ix/.test(codeOf("segIndexFor")));
+  ok("this is the pattern segments() already used",
+    /segCacheAllVer===geomVersion&&segCacheAll/.test(codeOf("segments")),
+    "I copied it and dropped the part that mattered");
+  ok("both slots are reported",/index, visible set/.test(codeOf("profReport"))&&
+    /index, all entities/.test(codeOf("profReport")),
+    "one figure looked healthy while the two evicted each other 575 times");
+
+  /* 2. A handle drag called segsDirty() every frame, which bumps geomVersion and so
+        invalidates all three caches at once. The stale entry is the one already ignored:
+        the dragged object is passed to snapPoint as `ignore`. */
+  ok("a handle drag bumps the picture, not the caches",
+    /dragVersion\+\+;\s*\}/.test(codeOf("applyHandle")),
+    "segsDirty invalidates the segment list, the index AND the flattened list");
+  ok("no segsDirty inside a handle drag",!/segsDirty/.test(codeOf("applyHandle")));
+  ok("the caches are told once, when the drag ends",
+    /if\(drag\.dirty\)segsDirty\(\)/.test(srcAll));
+  ok("and not at all if nothing moved",/if\(!drag\.dirty\)past\.pop\(\)/.test(srcAll));
+
+  /* The profiler now names a thrashing cache, because a timing breakdown cannot show it:
+     "index rebuild 5046ms x575" reads as an expensive operation, and I read it that way
+     until the call count gave it away. */
+  const pr=codeOf("profReport");
+  ok("the report flags a thrashing cache",/the cache is thrashing/.test(pr));
+  ok("it compares rebuilds against geometry changes",/geomChanges/.test(pr),
+    "that ratio is the signature");
+  const flag=(n,g)=>n/g>4;
+  ok("575 rebuilds for 33 changes is flagged",flag(575,33));
+  ok("448 is flagged",flag(448,33));
+  ok("418 is flagged",flag(418,33));
+  ok("8 rebuilds for 25 changes is quiet",!flag(8,25),
+    "a healthy run must not cry wolf");
+  ok("25 for 26 is quiet",!flag(25,26));
+}
+
 // ---------- overlay cost ----------
 G("Selection handles");
 {
@@ -1067,7 +1154,10 @@ G("Spatial index");
      were anywhere near the pointer. I twice declined this as premature; the figure that
      settled it came from the device rather than from me. */
   const dist=(a,b)=>Math.hypot(b.x-a.x,b.y-a.y);
-  let geomVersion=1, segIndex=null, segIndexVer=-1, segIndexAll=false;
+  /* Renamed with the two-slot fix: one slot with an `all` flag thrashed. The stubs follow
+     the source rather than the other way round. */
+  let geomVersion=1;
+  let segIndexVis=null, segIndexVisVer=-1, segIndexAllC=null, segIndexAllVer=-1;
   const PROF={on:false}, profStart=()=>0, profEnd=()=>{};
   let SEGS=[];
   const segments=()=>SEGS;
@@ -1107,11 +1197,13 @@ G("Spatial index");
   const got=segsNear({x:100000,y:100000},300,false);
   ok("a query returns a small fraction of the list",got.length<SEGS.length/50,
     got.length+" of "+SEGS.length);
+  /* These described the single-slot design: one cache plus an `all` flag. That thrashed
+     once two callers wanted different variants, so there are two slots now. */
   ok("the index is keyed on the geometry version",
-    /segIndexVer!==geomVersion/.test(codeOf("segIndexFor")));
-  ok("and rebuilt separately for the all-entities set",
-    /segIndexAll!==!!all/.test(codeOf("segIndexFor")),
-    "the visible and hidden sets are different lists");
+    /segIndexVisVer===geomVersion/.test(codeOf("segIndexFor")));
+  ok("and each variant has its own slot",
+    /segIndexAllVer===geomVersion&&segIndexAllC/.test(codeOf("segIndexFor")),
+    "the visible and all-entities lists are different, and both callers run per interaction");
   /* A pathological tolerance must not sweep the grid more slowly than the loop. */
   /* This asserted the fallback that a device report proved harmful: it fired at low zoom
      and handed back all 38,754 segments, defeating the index exactly where it was needed.
@@ -2004,8 +2096,14 @@ G("Segment cache");
     "restoring changes the geometry wholesale");
   ok("hiding a layer invalidates it",/L\.vis=!L\.vis;segsDirty\(\)/.test(srcAll),
     "visibility changes what segments() returns");
-  ok("a drag invalidates it",/segsDirty\(\);\s*\/\/ a drag moves geometry/.test(srcAll),
-    "objects move every frame during a drag, so a stale list would snap to where they were");
+  /* This asserted invalidation on every frame of a drag, which was rebuilding three caches
+     per frame — 448, 575 and 418 rebuilds against 33 real geometry changes on the device.
+     The dragged object is passed to snapPoint as `ignore`, so its stale segments are
+     filtered out of every candidate list anyway; nothing else has moved. Invalidated once,
+     when the drag ends. */
+  ok("a drag invalidates it once, at the end",
+    /if\(drag\.dirty\)segsDirty\(\)/.test(srcAll),
+    "per frame it rebuilt the segment list, the index and the flattened list");
   // the cache must key visible and all-entity lists separately
   ok("the visible list and the all list are cached separately",
     /segCacheAllVer/.test(codeOf("segments"))&&/segCacheVer/.test(codeOf("segments")),

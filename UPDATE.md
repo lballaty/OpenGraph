@@ -1,4 +1,4 @@
-# Update → 3.42.0
+# Update → 3.44.0
 
 Ten files. Everything else in the repo is unchanged.
 
@@ -6,8 +6,8 @@ Ten files. Everything else in the repo is unchanged.
 |---|---|
 | `index.html` | **yes** — the app |
 | `CHANGELOG.md` | yes |
-| `tests.js` | 700 tests |
-| `checks.js` | the concat sweep |
+| `tests.js` | 726 tests |
+| `checks.js` | unchanged since 3.40.0, include for safety |
 | `coverage.json` | **yes** — the ratchet's baseline |
 | `TEST-PLAN.md` | yes, CI diffs it |
 | `TODO.md` | what the data closed and reopened |
@@ -17,27 +17,19 @@ Ten files. Everything else in the repo is unchanged.
 
 Upload all ten: `https://github.com/lballaty/OpenGraph/upload/main`
 
-## What your last report found
+## The handle problem
 
-**The overlay was 16ms a frame** with a large selection, where it is normally 0.06 —
-two hundred times, and the overlay is redrawn every frame regardless of any cache. The
-cause was one handle per vertex with no limit: 40,521 nodes selected meant 40,521
-handles. That is the large-group drag you reported days ago; it was never the geometry.
+Both tolerances were 22px on touch and handles are tested first — but a vertex sits ON
+the object, so a press near a corner was inside both and the handle always won. Under
+about 100px across, every point is within 22px of a vertex, so a small object could
+only be resized, never moved.
 
-Capped at 600, with the outline taking over past that. Nothing real is lost — beyond a
-few hundred the handles overlap each other and cannot be grabbed individually anyway.
+Handle tolerance is now 13px on touch against the object's 22. Plus two cases the
+tolerance alone does not fix: more than three handles within reach defers to moving,
+and an object too small to offer both actions defers and tells you to zoom in.
 
-**SVG export is 27ms.** That question is closed. **DXF was not timed at all** — your
-log shows a 2.9MB export with no figure, because I had wrapped only the SVG path. Now
-timed, so the next report will say.
+## How to think about it now
 
-## Worth trying, in rough order of what would tell us most
-
-1. **Select everything on a large drawing and drag it.** That is the path this release
-   changes. Expect the outline rather than handles, and a note saying why.
-2. **Create a text object** on a large drawing — the 3.39.0 freeze fix, still untested.
-3. **Rotate the iPad** with a drawing open. Stale pixels at an edge would be the sign
-   I got the buffer growth wrong.
-4. **Zoom in and pan** — the culling path. An object vanishing near the edge is the
-   failure mode.
-5. **DXF export** while measuring, now that it reports a time.
+- Press **near a corner** of a reasonably sized object → grabs that corner.
+- Press **anywhere else on it** → drags.
+- **Dense polyline or tiny object** → drags, because no single point can be meant.
