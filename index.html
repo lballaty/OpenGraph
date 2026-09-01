@@ -1704,7 +1704,19 @@ function flatEntities(){
   return flatCache;
 }
 function objPoints(o){
-  if(isMeasureLike(o))return[o.a,o.b];
+  /* The OFFSET line as well as the measured points. A dimension is drawn offset from the two
+     points it measures -- that offset line, and the label on it, are what you SEE -- but the
+     box covered only a and b. Wrong from the start, and it never mattered because nothing
+     consulted it for a measure until viewport culling arrived in 3.41.0. Then zooming in
+     dropped dimensions whose measured line had left the view while their visible line and
+     label had not.
+
+     Only objPoints, which feeds the bounding box. vertsOf keeps the raw points: snapping and
+     sticky ends care where the measurement WAS taken, not where its label sits. */
+  if(isMeasureLike(o)){
+    const G=dimGeom(o);
+    return G?[o.a,o.b,G.A,G.B]:[o.a,o.b];
+  }
   if(o.t==="poly")return o.p;
   if(o.t==="rect")return rectPts(o);
   if(o.t==="circle")return[{x:o.c.x-o.r,y:o.c.y-o.r},{x:o.c.x+o.r,y:o.c.y+o.r}];
@@ -1730,6 +1742,19 @@ function objBBox(o){
   const pts=objPoints(o);if(!pts.length)return null;
   let mnx=Infinity,mny=Infinity,mxx=-Infinity,mxy=-Infinity;
   pts.forEach(p=>{mnx=Math.min(mnx,p.x);mny=Math.min(mny,p.y);mxx=Math.max(mxx,p.x);mxy=Math.max(mxy,p.y);});
+  /* A LABEL is drawn at an offset from its object and can be dragged well away from it. If
+     the object is off screen the label usually is too -- but a label dragged far enough
+     could be visible while its object is not, and culling would take it with the object.
+     Rare, and the same class of fault as the dimension label: a box that does not cover
+     what is drawn.
+
+     Included here rather than in objPoints because a label is not GEOMETRY: hit-testing and
+     snapping should not treat it as part of the shape, and objPoints feeds both. */
+  if(o.lo&&typeof o.lo.x==="number"){
+    const lx=(mnx+mxx)/2+o.lo.x, ly=(mny+mxy)/2+o.lo.y;
+    mnx=Math.min(mnx,lx);mxx=Math.max(mxx,lx);
+    mny=Math.min(mny,ly);mxy=Math.max(mxy,ly);
+  }
   return{mnx,mny,mxx,mxy};
 }
 function translateObj(o,dx,dy){
@@ -4414,6 +4439,14 @@ const HANDLE_MAX=600;
 const HANDLE_AMBIGUOUS=3;
 let tinyHandleAt=0;
 let handleCapNoted=false;
+/* Back to 120, because widening the margin is the wrong lever. At 200 the culled region
+   considers 87% more area than the screen against a measured 73% of objects being off it --
+   most of the saving handed back to cover a label that could simply be measured instead.
+
+   The trade is not symmetrical: too generous costs invisible draw calls, too tight makes
+   something DISAPPEAR. So the answer is not a bigger guess, it is a box that already covers
+   what gets drawn -- which is what fixing objPoints did. 120px then covers stroke width and
+   the selection halo, which is what it was for. */
 const CULL_PAD_PX=120;
 const GRID_MIN_PX=4;   // the app's existing legibility threshold -- decimation is the only change
 function gridStep(base,zoom){
@@ -7689,8 +7722,8 @@ const LIB_PREFIX="dg:lib:";   // one key per named library, so sets stay separab
    you have to remember -- and several builds shipped on the same date anyway, so neither
    answered "which copy am I looking at". A content hash cannot drift: two files showing
    the same one ARE the same file. */
-const APP_NAME="Drafting Grid", APP_VERSION="3.47.0", APP_BUILD="2026-08-29";
-const APP_HASH="2e34c19c";
+const APP_NAME="Drafting Grid", APP_VERSION="3.48.1", APP_BUILD="2026-08-29";
+const APP_HASH="f4d7ecda";
 const AUTO_KEY="dg:auto";
 const APP_DOC="drafting-grid";
 const LAYER_APP="drafting-grid-layer";   // one layer and its contents, as a file
@@ -11192,7 +11225,18 @@ function resetBarOrder(){
 /* Always reachable, never scrolled away. Settings in particular holds a great deal --
    grid, layers, snapping, autosave, usage, toolbar order -- and had been pushed past the
    visible eight by the reordering. Pinning is by bar so each keeps what belongs to it. */
-const PINNED={2:["settings","keys"]};
+/* Select is pinned on bar 1, and Undo on bar 2, for the same reason Settings and the guide
+   already were: they must be reachable whatever else has gone wrong.
+
+   Select especially. It is the tool you need to recover from ANY other state -- to deselect,
+   to grab a handle, to stop drawing -- and it was the first button in a list that scrolls.
+   A report of "I could not switch to Select because the menu had scrolled" is the worst
+   version of this fault, because the way out was the thing out of reach.
+
+   3.45.1 fixed the flex bug that let the list scroll away, and pinning is the belt to that
+   braces: even if a future layout change makes the list scroll again, the way out will not
+   be inside it. */
+const PINNED={1:["select"],2:["undo","settings","keys"]};
 function buildBars(){
   [1,2].forEach(n=>{
     const items=document.querySelector("#bar"+n+" .items");items.innerHTML="";

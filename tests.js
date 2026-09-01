@@ -637,6 +637,68 @@ G("Tab tracking");
     /setInterval\(beatTab,TAB_BEAT_MS\)/.test(srcAll));
 }
 
+// ---------- a box must cover what is drawn ----------
+G("Bounding boxes and culling");
+{
+  /* Reported: zooming in made a dimension label disappear. A dimension is drawn OFFSET from
+     the two points it measures -- that offset line and its label are what you see -- but
+     objPoints returned only a and b. The box was wrong from the start and never mattered,
+     because nothing consulted it for a measure until viewport culling arrived in 3.41.0.
+
+     Zoomed out the whole drawing is on screen and the cull never fires. Zoom in and it
+     starts working, dropping dimensions whose measured line has left the view while their
+     visible line has not. */
+  const op=codeOf("objPoints");
+  ok("a measure's points include the offset line",
+    /const G=dimGeom\(o\);\s*return G\?\[o\.a,o\.b,G\.A,G\.B\]/.test(op),
+    "the offset line is what is actually drawn");
+  ok("and it survives dimGeom returning nothing",/:\[o\.a,o\.b\]/.test(op));
+  ok("vertsOf still returns the raw points",
+    /if\(isMeasureLike\(o\)\)return\[o\.a,o\.b\];/.test(srcAll),
+    "snapping and sticky ends care where the measurement was taken, not where its label sits");
+  /* A dragged label is the same class of fault. */
+  ok("a dragged label is inside its object's box",/if\(o\.lo&&typeof o\.lo\.x==="number"\)/.test(codeOf("objBBox")));
+  ok("but not in objPoints",!/o\.lo/.test(op),
+    "a label is not geometry: hit-testing and snapping must not treat it as part of the shape");
+  /* The margin was NOT the answer, and I tried it first. */
+  ok("the cull margin stayed at 120",/CULL_PAD_PX=120/.test(srcAll),
+    "200 considered 87% more area than the screen against 73% of objects being off it");
+  ok("and the reasoning is recorded",/widening the margin is the wrong lever/.test(srcAll),
+    "so nobody widens it next time instead of fixing the box");
+  // the arithmetic that made 200 wrong
+  const area=p=>((1366+2*p)*(892+2*p))/(1366*892);
+  ok("120px considers about half again",Math.round((area(120)-1)*100)===49);
+  ok("200px considers nearly double",Math.round((area(200)-1)*100)===87,
+    "most of the culling saving handed back to cover a label that could be measured");
+}
+
+// ---------- the way out must always be reachable ----------
+G("Pinned commands");
+{
+  /* Reported: "I could not switch to Select because the menus had scrolled." That is the
+     worst version of the scrolling fault, because the way OUT of any other state was the
+     thing out of reach. Select deselects, grabs handles and stops drawing; without it you
+     are stuck in whatever tool you are in. */
+  ok("Select is pinned",/PINNED=\{1:\["select"\]/.test(srcAll),
+    "it is the tool you need to recover from any other state");
+  ok("Undo is pinned too",/2:\["undo"/.test(srcAll),
+    "the other way back from a mistake");
+  ok("Settings and the guide stay pinned",/"settings","keys"/.test(srcAll));
+  /* Pinned means OUTSIDE the scrolling list, which is the whole point. */
+  const css=srcAll.slice(0,srcAll.indexOf("</style>"));
+  ok("the pinned area does not scroll",/\.pin\{[^}]*flex:0 0 auto/.test(css));
+  ok("and sits outside .items",/Pinned commands sit outside \.items/.test(srcAll));
+  ok("a floating bar keeps it visible below the list",
+    /\.bar\.float \.pin\{[^}]*border-top/.test(css),
+    "the list scrolls above it; the pin does not");
+  ok("each bar pins its own",/PINNED\[n\]\|\|\[\]/.test(codeOf("buildBars")),
+    "Select is on bar 1 and Undo on bar 2");
+  /* And the underlying fault stays fixed: pinning is the belt, min-height:0 is the braces. */
+  ok("the list can still shrink so it scrolls properly",
+    /\.bar\.float \.items\{[^}]*min-height:0/.test(css),
+    "pinning must not become the excuse for leaving the scroll broken");
+}
+
 // ---------- the last of the known bugs ----------
 G("Trimming an arc");
 {

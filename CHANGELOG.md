@@ -4,6 +4,61 @@ The **This build** line in Settings → About is a hash of the file's own conten
 Two copies showing the same one are the same file. Use it to tell builds apart —
 the version number alone will not, since several ship on the same date.
 
+## 3.48.1 — 2026-09-01 · build `f4d7ecda`
+
+### A dimension label vanished on zooming in
+A dimension is drawn **offset** from the two points it measures — that offset line,
+and the label on it, are what you see. But its bounding box covered only the two
+measured points.
+
+The box was wrong from the start and never mattered, because nothing consulted it for
+a measure until **viewport culling** arrived in 3.41.0. Zoomed out, the whole drawing
+is on screen and the cull never fires. Zoom in and it starts working — dropping
+dimensions whose *measured* line has left the view while their *visible* line and
+label have not.
+
+Fixed in `objPoints`, which feeds the box. `vertsOf` still returns the raw points:
+snapping and sticky ends care where the measurement was taken, not where its label
+sits.
+
+### And the same fault for a dragged label
+An object's label can be dragged well away from it, so a label could be on screen with
+its object off it and be culled along with it. Added to `objBBox` rather than
+`objPoints`, because a label is not geometry and hit-testing must not treat it as part
+of the shape.
+
+### The margin was not the answer, and I tried it first
+I widened the cull margin from 120px to 200px to cover the label text. At 200 the
+culled region considers **87% more area than the screen**, against a measured **73%**
+of objects being off it — handing back most of the saving to cover something that
+could simply be measured instead.
+
+Reverted, with the reasoning recorded next to the constant so nobody widens it next
+time instead of fixing the box.
+
+797 tests.
+
+## 3.48.0 — 2026-09-01 · build `6d2d5876`
+
+### Select is pinned, so it cannot scroll out of reach
+Reported: *"I couldn't switch to Select because the menus had scrolled."*
+
+That is the worst version of the scrolling fault, because **the way out of every other
+state was the thing out of reach**. Select is how you deselect, grab a handle, or stop
+drawing — without it you are stuck in whatever tool you happen to be in, and the button
+that fixes it is the one you cannot get to.
+
+Select is now pinned on the Draw bar, and Undo on the Edit bar, in the same area
+Settings and the guide already used for exactly this reason. Pinned means **outside the
+scrolling list**: on a docked bar it sits past the scroll at the end, and on a floating
+bar below it, visible while the list scrolls above.
+
+3.45.1 fixed the flex bug that let the list scroll away in the first place, and that
+fix stands — a test asserts it, so pinning does not become the excuse for leaving the
+scroll broken. But the way out should not have been inside the thing that can break.
+
+788 tests.
+
 ## 3.47.0 — 2026-09-01 · build `2e34c19c`
 
 The remaining known bugs. Two were real, one needed a sentence, one needed a decision.

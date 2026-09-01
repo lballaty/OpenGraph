@@ -1,34 +1,30 @@
-# Update → 3.47.0
+# Update → 3.48.1
 
 Ten files. Everything else in the repo is unchanged.
 Upload all ten: `https://github.com/lballaty/OpenGraph/upload/main`
 
-`index.html` · `CHANGELOG.md` · `tests.js` (780) · `checks.js` · `coverage.json`
-`TEST-PLAN.md` · `TODO.md` · `drafting-grid.schema.json` · `NAMING.md` · `release.sh`
+## The vanishing dimension label
 
-## Every known bug is now closed
+A dimension is drawn offset from the two points it measures — that offset line and its
+label are what you see, but the bounding box covered only the measured points. Wrong
+from the start, and it never mattered until viewport culling arrived in 3.41.0. Zoomed
+out nothing is culled; zoom in and the cull drops dimensions whose measured line has
+left the view while the visible one has not.
 
-| | |
-|---|---|
-| **B6 arc trim** | fixed. A middle cut is refused with a reason, since it would leave two arcs |
-| **B5 panel positions** | fixed. Help, Ask and Symbols remember where you put them |
-| **B4 reorder in a group** | explained: a group reorders as a whole, the parts need Ungroup |
-| **B3 grid outside undo** | not a bug. View settings are not work, and the reasoning is recorded next to the code |
+Same fault for an object label dragged far from its object.
 
-Plus, in the two releases before this one: layer edits are undoable, the floating bar's
-top button is reachable, and a dimension label can be dragged.
+I first widened the cull margin instead. At 200px it considers 87% more area than the
+screen against 73% of objects being off it — most of the saving handed back to cover
+something measurable. Reverted, and the reasoning is recorded next to the constant.
 
-## What is left is not a bug list
+## Also in this bundle, if not yet loaded
 
-**F1 drawing scale** is the one structural gap: a sheet is real millimetres, so a plan
-at 1:50 has no way to say so. Everything works around it.
+- **3.48.0** Select and Undo pinned so they cannot scroll out of reach
+- **3.47.0** arc trimming, panel positions, group reorder message
+- **3.46.0** a dimension label can be dragged
+- **3.45.x** floating bar top button, layer edits undoable
 
-Then three surfaces nobody has tested: phone layout below 1366px, keyboard and screen
-reader use, and printing against an actual ruler.
+## Worth checking
 
-## Worth exercising in this build
-
-- **Trim an arc** where something crosses it — from an end, and from the middle.
-- **Drag the Ask or Symbols panel** somewhere, close it, reopen it.
-- **Rotate the iPad** afterwards; the panel should be clamped back on screen, not lost
-  off the side.
+**Zoom right in on a dimension** and pan so the measured points leave the screen while
+the label does not. That is the exact case.
