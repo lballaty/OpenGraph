@@ -1,35 +1,34 @@
-# Update → 3.44.0
+# Update → 3.47.0
 
 Ten files. Everything else in the repo is unchanged.
-
-| file | needed? |
-|---|---|
-| `index.html` | **yes** — the app |
-| `CHANGELOG.md` | yes |
-| `tests.js` | 726 tests |
-| `checks.js` | unchanged since 3.40.0, include for safety |
-| `coverage.json` | **yes** — the ratchet's baseline |
-| `TEST-PLAN.md` | yes, CI diffs it |
-| `TODO.md` | what the data closed and reopened |
-| `drafting-grid.schema.json` | schema 3.35 |
-| `NAMING.md` | the naming convention |
-| `release.sh` | only if you run releases yourself |
-
 Upload all ten: `https://github.com/lballaty/OpenGraph/upload/main`
 
-## The handle problem
+`index.html` · `CHANGELOG.md` · `tests.js` (780) · `checks.js` · `coverage.json`
+`TEST-PLAN.md` · `TODO.md` · `drafting-grid.schema.json` · `NAMING.md` · `release.sh`
 
-Both tolerances were 22px on touch and handles are tested first — but a vertex sits ON
-the object, so a press near a corner was inside both and the handle always won. Under
-about 100px across, every point is within 22px of a vertex, so a small object could
-only be resized, never moved.
+## Every known bug is now closed
 
-Handle tolerance is now 13px on touch against the object's 22. Plus two cases the
-tolerance alone does not fix: more than three handles within reach defers to moving,
-and an object too small to offer both actions defers and tells you to zoom in.
+| | |
+|---|---|
+| **B6 arc trim** | fixed. A middle cut is refused with a reason, since it would leave two arcs |
+| **B5 panel positions** | fixed. Help, Ask and Symbols remember where you put them |
+| **B4 reorder in a group** | explained: a group reorders as a whole, the parts need Ungroup |
+| **B3 grid outside undo** | not a bug. View settings are not work, and the reasoning is recorded next to the code |
 
-## How to think about it now
+Plus, in the two releases before this one: layer edits are undoable, the floating bar's
+top button is reachable, and a dimension label can be dragged.
 
-- Press **near a corner** of a reasonably sized object → grabs that corner.
-- Press **anywhere else on it** → drags.
-- **Dense polyline or tiny object** → drags, because no single point can be meant.
+## What is left is not a bug list
+
+**F1 drawing scale** is the one structural gap: a sheet is real millimetres, so a plan
+at 1:50 has no way to say so. Everything works around it.
+
+Then three surfaces nobody has tested: phone layout below 1366px, keyboard and screen
+reader use, and printing against an actual ruler.
+
+## Worth exercising in this build
+
+- **Trim an arc** where something crosses it — from an end, and from the middle.
+- **Drag the Ask or Symbols panel** somewhere, close it, reopen it.
+- **Rotate the iPad** afterwards; the panel should be clamped back on screen, not lost
+  off the side.

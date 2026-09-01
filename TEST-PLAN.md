@@ -1,6 +1,6 @@
 # Test plan
 
-Generated from `index.html` — version **3.44.0**, build **`871cf47e`**.
+Generated from `index.html` — version **3.47.0**, build **`2e34c19c`**.
 Regenerate with `node testplan.js index.html > TEST-PLAN.md` after any change.
 
 Automated coverage is in `tests.js` (`node tests.js`). Everything below needs a real

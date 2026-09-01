@@ -163,6 +163,61 @@ any change.
 3. **A blanket rename touching prose.** `editable` → `canSelect` rewrote four
    sentences the user reads, one of which shipped. Now guarded by a check.
 
+
+
+## Known bugs — all closed, 2026-09-01
+
+| | outcome |
+|---|---|
+| B1 layer edits not undoable | **fixed 3.45.0** — five controls recorded no step, so Undo undid whatever you last drew |
+| B2 symbols with links | **fixed 3.22.1** |
+| B3 grid and sheet outside undo | **not a bug.** View settings, not work. Recorded next to the code |
+| B4 reorder inside a group | **explained 3.47.0** — a group reorders as a whole; the parts need Ungroup |
+| B5 panel positions | **fixed 3.47.0** — stored in the workspace, clamped to the current window |
+| B6 arc trim | **fixed 3.47.0** — a middle cut is refused, since it would need two arcs |
+
+What is left is not a bug list. It is one structural gap and three untested surfaces:
+
+| | |
+|---|---|
+| **F1 drawing scale** | a sheet is real millimetres, so a plan at 1:50 has no way to say so. The largest remaining piece of work |
+| F3 fillet and chamfer | needs tangent-arc maths |
+| F4 command line with aliases | the registry and a text input both exist |
+| N2 phone layout | never seen below 1366px |
+| N3 keyboard and screen readers | never looked at |
+| N4 printing | the 1:1 claim has never met a ruler |
+
+## Status, 2026-09-01 — corrected against the device data
+
+The bug table above is stale in five places. Correcting it here rather than editing it,
+because what a list CLAIMED matters when reading it later.
+
+| was | now |
+|---|---|
+| B1 layer edits not undoable | **fixed 3.45.0.** Layers were already in the snapshot; five controls simply never recorded a step, so Undo after a layer edit undid whatever you last drew |
+| B2 symbols with links break | **fixed 3.22.1** |
+| F2 Array | **built 3.37.0** |
+| R3 viewport culling | **built 3.41.0** — closed on a 0% reading, reopened by a 73% one |
+| R6 spatial index | **built 3.33.0** |
+| P5 push() at 1,193ms | **wrong by 270x.** Measured 4.40ms on the device. The worker was never needed |
+
+## Still open, honestly ranked
+
+| | | why it is not done |
+|---|---|---|
+| B3 | grid, sheet and title outside the undo snapshot | may be correct: they are view settings, not drawing content. Needs a decision, not code |
+| B4 | reorder does not work inside a group | real, small, nobody has hit it |
+| B5 | panel positions are not remembered | real, small, and irritating on a tablet |
+| B6 | arc trim, and break or extend on a curve | honest refusals; the gap is real |
+| F1 | **drawing scale** | the structural gap. A sheet is real millimetres, so a plan at 1:50 has no way to say so. The largest remaining piece of work in the app |
+| F3 | fillet and chamfer | needs tangent-arc maths |
+| F4 | command line with aliases | the registry and a text input both exist |
+| N2 | phone-sized layout | never seen below 1366px |
+| N3 | keyboard-only use and screen readers | never looked at |
+| N4 | printing on paper | the 1:1 claim has never met a ruler |
+
+**F1 is the one that matters.** Everything else is a papercut or an untested surface.
+
 ## Closed by measurement, 2026-09-01 — on-device figures at 39,740 and 79,480 nodes
 
 Four items I had AGREED with. The device said no to each, and none was built. Kept here

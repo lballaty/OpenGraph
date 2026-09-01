@@ -69,7 +69,12 @@
   }
   .bx:hover{color:var(--accent);background:var(--panel2)}
   .bar{touch-action:none}
-  .items{display:flex;gap:4px;align-items:center;overflow-x:auto;flex:1 1 auto;min-width:0;
+  /* min-width:0 is already here and is the horizontal equivalent -- a docked bar is a row,
+     so width is the axis that matters and it was correct. min-height:0 added for the same
+     reason on the other axis: the float rule overrides direction, and a rule that is right
+     only because another rule happens to override it is not right. */
+  .items{display:flex;gap:4px;align-items:center;overflow-x:auto;flex:1 1 auto;
+    min-width:0;min-height:0;
     scrollbar-width:none;touch-action:pan-x;overscroll-behavior:contain}
   .items::-webkit-scrollbar{display:none}
   /* Pinned commands sit outside .items, so horizontal overflow never carries them off
@@ -92,8 +97,16 @@
     box-shadow:0 14px 40px rgba(0,0,0,.5);overflow:hidden;min-width:56px;min-height:42px}
   .bar.float .barhead{border-bottom:1px solid var(--hair);padding:6px 8px;justify-content:flex-start}
   .bar.float .barhead h3{flex:1}
+  /* min-height:0 is the whole fix. .bar.float is a flex column with overflow:hidden; a flex
+     child does not shrink below its content height unless this permits it, so .items grew
+     to fit every button, the bar could not contain it, and the top row scrolled out of
+     reach. Whether you could see the first button depended on where the browser happened to
+     leave the scroll.
+
+     The identical omission was fixed in #askBody, #helpBody and #panelBody this morning --
+     by name, three times, without ever sweeping for the pattern. checks.js sweeps now. */
   .bar.float .items{flex-wrap:wrap;align-content:flex-start;overflow:auto;padding:8px;
-    touch-action:pan-y;overscroll-behavior:contain;flex:1 1 auto}
+    touch-action:pan-y;overscroll-behavior:contain;flex:1 1 auto;min-height:0}
   .bar.float.collapsed{height:auto!important;min-height:0}
   .bar.float .rz{display:block;position:absolute;right:0;bottom:0;width:20px;height:20px;
     cursor:nwse-resize;touch-action:none;background:
@@ -1340,6 +1353,43 @@ let altDown=false, shiftDown=false, spaceDown=false;
 
 /* ---------- history ---------- */
 let past=[], future=[];
+/* Where the three draggable panels were left. Kept in the WORKSPACE rather than the
+   drawing: where you like the Symbols panel is about you and this screen, not about the
+   sheet, and saving it in the document would carry it to whoever you sent the file to.
+
+   Recorded on drop rather than on every pointermove, which would write to storage sixty
+   times a second for a gesture whose only interesting moment is the end. */
+const PANEL_POS={};
+function rememberPanel(id,el){
+  const r=el.getBoundingClientRect();
+  PANEL_POS[id]={x:Math.round(r.left),y:Math.round(r.top)};
+  saveUI();
+}
+function restorePanel(id,el){
+  const p=PANEL_POS[id];
+  if(!p||!el)return;
+  /* Clamped to the window that exists NOW. A position saved in landscape puts a panel off
+     the side in portrait, and a panel you cannot reach is worse than one in the wrong
+     place -- the same reasoning as reclampFloatingBars. */
+  const r=el.getBoundingClientRect();
+  const w=r.width||220, h=r.height||120;
+  el.style.left=Math.max(4,Math.min(p.x,innerWidth-w-4))+"px";
+  el.style.top=Math.max(4,Math.min(p.y,innerHeight-40))+"px";
+  el.style.right="auto";
+  el.style.transform="none";
+}
+/* What an undo step holds, and deliberately what it does not.
+   IN: entities, measures, layers, the current layer, and the two id counters.
+   OUT: grid interval, unit, sheet, title block, view.
+
+   That was listed as bug B3 and it is not one. Those are VIEW settings, not drawing
+   content: changing the grid from 1mm to 5mm alters nothing about the drawing, and an Undo
+   that silently put the grid back while leaving your last line in place would be a worse
+   surprise than the one it fixed. The test of whether something belongs is whether undoing
+   it would restore WORK, and none of these is work.
+
+   Layers ARE in, and are content -- which is why 3.45.0 had to add the missing push() calls
+   rather than change what a step holds. */
 const snapshot=()=>JSON.stringify({e:S.entities,m:S.measures,l:S.layers,c:S.cur,n:S.nextLayer,i:S.nextId});
 function restore(s){segsDirty();const o=JSON.parse(s);S.entities=o.e;S.measures=o.m;S.layers=o.l;S.cur=o.c;S.nextLayer=o.n;
   if(o.i)S.nextId=o.i;S.sel=[];}
@@ -1858,6 +1908,67 @@ function circleCrossings(o){
   out.sort((x,y)=>x-y).forEach(v=>{ if(!uniq.length||Math.abs(v-uniq[uniq.length-1])>1e-6)uniq.push(v); });
   return uniq;
 }
+/* Trimming an arc, which used to be refused outright. The maths is the circle case with one
+   difference that matters: a circle wraps, so every gap between crossings is a candidate; an
+   arc has two ENDS, and the piece the tap falls in may be bounded by an end rather than by a
+   crossing. So the ends are added to the crossing list and the wraparound is dropped.
+
+   The result stays an arc rather than becoming two, because an arc cannot have a hole:
+   cutting a piece out of the middle would need two arcs, and the honest answer there is to
+   say so rather than silently keep one half. */
+function trimArc(o,p){
+  /* circleCrossings, not a new function. It solves segment-against-circle using o.c and
+     o.r, which an arc has -- so it already returns every angle where something crosses the
+     arc's underlying circle. Points outside the arc's own sweep are discarded below. I had
+     written arcCrossings() as though it existed: the fourth helper I have invented today,
+     after selectionBBox, updateUndoRedo and drawSelOutline. */
+  const cuts=circleCrossings(o);
+  const at=norm(Math.atan2(p.y-o.c.y,p.x-o.c.x));
+  /* Positions along the arc, measured from its start, so the comparison is a simple number
+     line rather than angle arithmetic with wraparound. */
+  const sweep=o.sw;
+  const along=a=>{
+    const rel=norm(a-o.a0);
+    return sweep>=0?rel:-(norm(o.a0-a));
+  };
+  const relAt=along(at);
+  const ends=[0,sweep];
+  const marks=cuts.map(along)
+    .filter(x=>sweep>=0?(x>1e-9&&x<sweep-1e-9):(x<-1e-9&&x>sweep+1e-9))
+    .concat(ends)
+    .sort((a,b)=>sweep>=0?a-b:b-a);
+  if(marks.length<3){
+    note(cuts.length?"An arc needs a crossing before a piece can be trimmed."
+                    :"Nothing crosses that arc. Use Erase to remove it.");
+    return;
+  }
+  let lo=null,hi=null;
+  for(let i=0;i<marks.length-1;i++){
+    const a=marks[i],b=marks[i+1];
+    const inSeg=sweep>=0?(relAt>=a-1e-9&&relAt<=b+1e-9):(relAt<=a+1e-9&&relAt>=b-1e-9);
+    if(inSeg){lo=a;hi=b;break;}
+  }
+  if(lo===null){note("Tap the part of the arc you want to remove.");return;}
+  const atStart=Math.abs(lo-0)<1e-9, atEnd=Math.abs(hi-sweep)<1e-9;
+  if(atStart&&atEnd){note("That would remove the whole arc. Use Erase instead.");return;}
+  if(!atStart&&!atEnd){
+    /* A piece out of the middle would leave two arcs, and one object cannot be two. Said,
+       rather than quietly keeping half. */
+    note("That piece is in the middle, which would leave two arcs. Trim from one end, or "+
+      "use Break to split it first.");
+    return;
+  }
+  push();
+  const newA0=atStart?o.a0+ (sweep>=0?hi:hi) : o.a0;
+  const newSw=atStart?(sweep-hi):lo;
+  if(Math.abs(newSw)<1e-6){note("That would remove the whole arc.");undoLast();return;}
+  o.a0=norm(newA0);o.sw=newSw;
+  roundGeom(o);
+  draw();
+  const deg=Math.abs(newSw)*180/Math.PI;
+  logLine("trim: arc shortened to "+deg.toFixed(1)+"\u00b0");
+  note("Trimmed to an arc of "+deg.toFixed(0)+"\u00b0.");
+}
 function trimCircle(o,p){
   const cuts=circleCrossings(o);
   if(cuts.length<2){
@@ -1959,7 +2070,7 @@ function trimAt(p){
   const o=trimTarget(p,"trimmed");
   if(!o)return;
   if(o.t==="circle"){trimCircle(o,p);return;}
-  if(o.t==="arc"){note("Trimming an arc further is not supported yet \u2014 only a full circle.");return;}
+  if(o.t==="arc"){trimArc(o,p);return;}
   const cr=crossingsAlong(o);
   const at=alongChain(o,p);
   if(!cr||!at)return;
@@ -2420,6 +2531,7 @@ function joinSelection(){
    Forward and backward move by ONE position among the things that actually overlap, not
    one position in the array. Stepping past an object on the other side of the sheet looks
    like the command did nothing, and you would tap it twenty times wondering why. */
+let reorderGroupNoted=false;
 function orderTargets(){
   // Top-level objects only: an item inside a group has its order within that group, and
   // pulling it out of the group's own list would take it out of the group.
@@ -2436,6 +2548,17 @@ function overlaps(a,b){
 function reorder(where){
   const t=orderTargets();
   if(!t.length){note("Select something to reorder.");return;}
+  /* A group reorders as a whole, and that is the only order it HAS at the top level. Anyone
+     wanting to change the order of its parts has to ungroup first -- which is a reasonable
+     rule and an unreasonable thing to have to work out from nothing happening.
+
+     Said only when the selection is entirely groups: with a mixture, the loose objects
+     reorder and a message about groups would be wrong. */
+  if(t.every(o=>o.t==="group")&&!reorderGroupNoted){
+    reorderGroupNoted=true;
+    note((t.length===1?"That group moves":"Those groups move")+" as a whole. To change the "+
+      "order of the parts inside, ungroup first.");
+  }
   const tset=new Set(t);
   const rest=S.entities.filter(o=>!tset.has(o));
   if(where==="front"||where==="back"){
@@ -4688,7 +4811,13 @@ function drawSelOutline(){
   g.restore();
 }
 function drawHandles(){
-  if(S.tool!=="select"||drag&&drag.mode==="move")return;
+  /* Drawn in the same state the press handler accepts them, or there is nothing to aim at:
+     a grabbable handle you cannot see is no better than no handle. The condition is
+     duplicated rather than shared because the press path also needs `sp`, and a helper
+     taking neither argument would have to read two globals to answer one question -- but it
+     MUST stay in step with the press handler, which is what the test asserts. */
+  const measureIdle=S.tool==="measure"&&(!pend.pts||!pend.pts.length);
+  if((S.tool!=="select"&&!measureIdle)||drag&&drag.mode==="move")return;
   /* Capped. A device report measured the overlay at 16.00ms per frame where it is normally
      0.06 -- 200 times -- and the overlay is drawn FRESH every frame, so it is the one cost
      no cache can skip. The reason was one handle per VERTEX with no limit: a selection of
@@ -6198,7 +6327,20 @@ function finishMeasureAsLength(){
        it spans 50mm of a detail or 50m of a plot -- a fixed distance in mm would be
        invisible at one scale and enormous at the other. Drag the handle to change or
        zero it; existing measurements are untouched. */
-    push();S.measures.push({a:pend.pts[0],b:pend.pts[1],off:MEASURE_OFFSET_PX/S.view.zoom,l:S.cur});
+    push();
+    const dim={a:pend.pts[0],b:pend.pts[1],off:MEASURE_OFFSET_PX/S.view.zoom,l:S.cur};
+    S.measures.push(dim);
+    /* Selected, so its handles are there to grab. A dimension is created ALREADY offset, and
+       the offset handle is the only way to change that -- but handles are drawn only in
+       Select, and finishing a measurement left you in Measure. So the next tap started
+       another measurement instead of reaching the handle, and there was no way to move the
+       label without knowing to switch tools first. Nothing said so.
+
+       The tool is NOT switched: measuring is usually done several times in a row, and
+       taking the tool away after one would be worse. Selecting the result is enough,
+       because the handles then show where to grab. */
+    S.sel=[dim];
+    note("Measured. Drag the round handle at the middle to move the label off the line.");
   }
   resetPend();draw();
 }
@@ -6285,7 +6427,19 @@ cv.addEventListener("pointerdown",e=>{
   // entirely: its object-pick and rubber-band paths both return from endPtr before
   // reaching commit(), so a tap on an existing object would silently swallow the
   // pick. Every press goes through commit() until both points are in.
-  if(S.tool==="select"&&!m2p){
+  /* The Measure tool gets one exception, and only one: BEFORE a new measurement has begun,
+     a press may grab a handle of the dimension just created.
+
+     A dimension is created already offset, and the offset handle is the only way to change
+     that -- but handles belong to Select, and finishing a measurement left you in Measure.
+     So the next tap started another measurement, and there was no way to move the label
+     without knowing to switch tools. Nothing said so.
+
+     Switching to Select automatically would have been the easy fix and the wrong one:
+     measuring is usually done several times in a row. Scoping the exception to "no points
+     placed yet" means it cannot interfere with a measurement in progress. */
+  const measureIdle=S.tool==="measure"&&(!pend.pts||!pend.pts.length);
+  if((S.tool==="select"||measureIdle)&&!m2p){
     const h=handleAt(sp);
     if(h){
       // Dragging a handle is direct manipulation, never a toggle -- there's no
@@ -7535,8 +7689,8 @@ const LIB_PREFIX="dg:lib:";   // one key per named library, so sets stay separab
    you have to remember -- and several builds shipped on the same date anyway, so neither
    answered "which copy am I looking at". A content hash cannot drift: two files showing
    the same one ARE the same file. */
-const APP_NAME="Drafting Grid", APP_VERSION="3.44.0", APP_BUILD="2026-08-29";
-const APP_HASH="871cf47e";
+const APP_NAME="Drafting Grid", APP_VERSION="3.47.0", APP_BUILD="2026-08-29";
+const APP_HASH="2e34c19c";
 const AUTO_KEY="dg:auto";
 const APP_DOC="drafting-grid";
 const LAYER_APP="drafting-grid-layer";   // one layer and its contents, as a file
@@ -9536,6 +9690,7 @@ function renderStats(){
 function toggleSymbols(open){
   const on=open===undefined?!$("symbols").classList.contains("open"):open;
   $("symbols").classList.toggle("open",on);
+  if(on)requestAnimationFrame(()=>restorePanel("symbols",$("symbols")));
   document.querySelector('[data-cmd="symbols"]')?.classList.toggle("on",on);
   if(on)refreshSymbols();
 }
@@ -10063,15 +10218,19 @@ function layerUI(){
   S.layers.forEach(L=>{
     const row=document.createElement("div");row.className="lay"+(L.id===S.cur?" cur":"");
     const col=document.createElement("input");col.type="color";col.value=L.color;
-    col.onchange=e=>{L.color=e.target.value;draw();};
+    /* push() before the change, as every other mutation does. Layers are already IN the
+       snapshot, so the only thing missing was recording one -- which meant Undo after a
+       layer edit undid whatever you last DREW instead, silently, and the layer change
+       stayed. Losing the wrong work is about as bad as an undo can be. */
+    col.onchange=e=>{push();L.color=e.target.value;draw();};
     const nm=document.createElement("div");nm.className="nm";nm.textContent=L.name;
     nm.onclick=()=>{S.cur=L.id;layerUI();draw();};
     const eye=document.createElement("button");eye.textContent=L.vis?"◉":"○";eye.title="Show or hide";
-    eye.className=L.vis?"on":"";eye.onclick=()=>{L.vis=!L.vis;segsDirty();S.sel=S.sel.filter(o=>visible(o));layerUI();draw();};
+    eye.className=L.vis?"on":"";eye.onclick=()=>{push();L.vis=!L.vis;segsDirty();S.sel=S.sel.filter(o=>visible(o));layerUI();draw();};
     const lk=document.createElement("button");lk.textContent=L.lock?"🔒":"🔓";lk.title="Lock";
-    lk.onclick=()=>{L.lock=!L.lock;S.sel=S.sel.filter(canSelect);layerUI();draw();};
+    lk.onclick=()=>{push();L.lock=!L.lock;S.sel=S.sel.filter(canSelect);layerUI();draw();};
     const gd=document.createElement("button");gd.textContent="G";gd.title="Guides — dashed, not exported";
-    gd.className=L.guide?"on":"";gd.onclick=()=>{L.guide=!L.guide;layerUI();draw();};
+    gd.className=L.guide?"on":"";gd.onclick=()=>{push();L.guide=!L.guide;layerUI();draw();};
     const del=document.createElement("button");del.textContent="✕";del.title="Delete layer and its objects";
     del.onclick=()=>{
       if(S.layers.length<2){note("Keep at least one layer.");return;}
@@ -10229,7 +10388,7 @@ $("statsReset").onclick=async()=>{
 function toggleHelp(open){
   const h=$("help");
   const on=open===undefined?!h.classList.contains("open"):open;
-  if(on)dismissPopovers();
+  if(on){dismissPopovers();requestAnimationFrame(()=>restorePanel("help",h));}
   h.classList.toggle("open",on);
   document.querySelector('[data-cmd="keys"]')?.classList.toggle("on",on);
   if(!on)capturing=null;
@@ -10252,7 +10411,7 @@ $("bHelp2").onclick=()=>toggleHelp(true);
     h.style.top=Math.max(4,Math.min(innerHeight-40,e.clientY-d.dy))+"px";
     h.style.transform="none";
   });
-  const stop=()=>{d=null;bar.classList.remove("grabbing");};
+  const stop=()=>{if(d)rememberPanel("help",h);d=null;bar.classList.remove("grabbing");};
   bar.addEventListener("pointerup",stop);bar.addEventListener("pointercancel",stop);
 })();
 
@@ -10824,6 +10983,9 @@ function askVerLine(){
 function toggleAsk(open){
   const on=open===undefined?!$("ask").classList.contains("open"):open;
   $("ask").classList.toggle("open",on);
+  /* After the class, and on the next frame: the panel has no size until it is displayed,
+     and restorePanel clamps against its own width. */
+  if(on)requestAnimationFrame(()=>restorePanel("ask",$("ask")));
   if(on){askVerLine();flowsUI();howUI();requestAnimationFrame(()=>$("howAsk").focus());}
 }
 function howUI(){
@@ -11322,7 +11484,7 @@ function uiState(){return{keys:KEYS,bars:BARS,fs:immersive,order:barOrder,icons:
   /* In the WORKSPACE rather than the drawing: whether you want to see the build number is
      about you and this browser, not about the sheet. Saving it in the document would carry
      your preference to anyone you sent the file to. */
-  hideBuild:S.hideBuild};}
+  hideBuild:S.hideBuild,panelPos:PANEL_POS};}
 async function saveUI(){
   if(!hasStore)return;
   try{await STORE_WRAPPED.set(UI_KEY,JSON.stringify(uiState()),false);}catch(err){}
@@ -11337,6 +11499,14 @@ function applyUI(o){
   if(o.vertIcons!==undefined)S.vertIcons=!!o.vertIcons;
   if(o.vertSwap!==undefined)S.vertSwap=!!o.vertSwap;
   if(o.tplWorkspace!==undefined)S.tplWorkspace=!!o.tplWorkspace;
+  if(o.panelPos&&typeof o.panelPos==="object"){
+    /* Copied key by key rather than replacing the object, because restorePanel and
+       rememberPanel both close over the original reference. */
+    Object.keys(o.panelPos).forEach(k=>{
+      const v=o.panelPos[k];
+      if(v&&typeof v.x==="number"&&typeof v.y==="number")PANEL_POS[k]=v;
+    });
+  }
   if(o.hideBuild!==undefined){
     S.hideBuild=!!o.hideBuild;
     /* Applied here as well as stored: the cell is in the markup from the start, so without
@@ -11650,7 +11820,7 @@ $("askGuide").onclick=()=>toggleHelp(true);
     el.style.left=Math.round(Math.max(sb.l-6,Math.min(sb.r-80,e.clientX-d.dx)))+"px";
     el.style.top=Math.round(Math.max(sb.t-6,Math.min(sb.b-46,e.clientY-d.dy)))+"px";
   });
-  const up=()=>{d=null;};
+  const up=()=>{if(d)rememberPanel("ask",$("ask"));d=null;};
   head.addEventListener("pointerup",up);head.addEventListener("pointercancel",up);
 })();
 $("howAsk").onkeydown=e=>e.stopPropagation();
@@ -11700,7 +11870,7 @@ $("symHide").onclick=()=>toggleSymbols(false);
     el.style.left=Math.round(Math.max(sb.l-6,Math.min(sb.r-90,e.clientX-d.dx)))+"px";
     el.style.top=Math.round(Math.max(sb.t-6,Math.min(sb.b-46,e.clientY-d.dy)))+"px";
   });
-  const up=()=>{d=null;};
+  const up=()=>{if(d)rememberPanel("symbols",$("symbols"));d=null;};
   head.addEventListener("pointerup",up);head.addEventListener("pointercancel",up);
 })();
 $("opObj").oninput=()=>{$("opObjVal").textContent=$("opObj").value+"%";setOpacity("obj",+$("opObj").value);};
@@ -12332,7 +12502,7 @@ function buildLayerPop(){
       }
     };
     const eye=document.createElement("button");eye.className="eye"+(L.vis?" on":"");eye.textContent=L.vis?"◉":"○";
-    eye.onclick=e=>{e.stopPropagation();L.vis=!L.vis;segsDirty();S.sel=S.sel.filter(o=>visible(o));buildLayerPop();layerUI();draw();};
+    eye.onclick=e=>{e.stopPropagation();push();L.vis=!L.vis;segsDirty();S.sel=S.sel.filter(o=>visible(o));buildLayerPop();layerUI();draw();};
     row.appendChild(eye);
     box.appendChild(row);
   });

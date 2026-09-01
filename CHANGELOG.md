@@ -4,6 +4,142 @@ The **This build** line in Settings → About is a hash of the file's own conten
 Two copies showing the same one are the same file. Use it to tell builds apart —
 the version number alone will not, since several ship on the same date.
 
+## 3.47.0 — 2026-09-01 · build `2e34c19c`
+
+The remaining known bugs. Two were real, one needed a sentence, one needed a decision.
+
+### B6 — an arc can be trimmed
+It was refused outright: *"Trimming an arc further is not supported yet."* The maths
+is the circle case with one difference that matters: a circle wraps, so every gap
+between crossings is a candidate; an arc has **ends**, and the piece you tap may be
+bounded by an end rather than a crossing.
+
+A cut in the **middle** is refused with a reason, because it would leave two arcs and
+one object cannot be two — *"Trim from one end, or use Break to split it first."*
+Silently keeping half would be worse than refusing.
+
+It reuses `circleCrossings`, since an arc has a centre and a radius and that solver
+already answers the question. I had written `arcCrossings()` as though it existed —
+**the fourth helper I have invented today**, after `selectionBBox`, `updateUndoRedo`
+and `drawSelOutline`.
+
+### B5 — panel positions are remembered
+Help, Ask and Symbols all set `style.left` directly with nothing stored, so a panel
+dragged somewhere useful returned to its default on every open.
+
+Recorded on **drop**, not on every pointer move — a gesture whose only interesting
+moment is the end. Restored on the next frame, since a hidden panel has no size and the
+clamp needs its width. Clamped to the window that exists *now*, because a position
+saved in landscape puts a panel off the side in portrait, and a panel you cannot reach
+is worse than one in the wrong place.
+
+Kept in the **workspace**, not the drawing: where you like a panel should not travel
+with a file you send someone.
+
+### B4 — reordering a group says what it does
+A group reorders as a whole, and that is the only order it has at the top level. A
+reasonable rule, and an unreasonable thing to work out from nothing happening. Said
+once, and only when the selection is entirely groups — with a mixture the loose
+objects do reorder, so the message would be wrong.
+
+### B3 — not a bug, and now recorded as such
+The grid, unit, sheet and title block are outside the undo snapshot. That was listed
+as a bug; it is correct. They are **view settings, not drawing content**, and an Undo
+that silently put the grid back while leaving your last line in place would be a worse
+surprise than the one it fixed.
+
+The test of whether something belongs is whether undoing it would restore **work**.
+Layers are in, and are work — which is why 3.45.0 had to add the missing `push()` calls
+rather than change what a step holds.
+
+780 tests. Every known bug is now fixed, explained, or decided against.
+
+## 3.46.0 — 2026-09-01 · build `dcd60f9d`
+
+### A dimension label could not be grabbed or moved
+Everything needed was already there — the offset handle, and hit testing correctly
+against the **offset** line rather than the raw measured points. What was missing was
+the state.
+
+A dimension is created **already offset**, and the offset handle is the only way to
+change that. But handles belong to the Select tool, and finishing a measurement left
+you in Measure — so the next tap started another measurement instead of reaching the
+handle. There was no way to move the label without knowing to switch tools first, and
+nothing said so.
+
+Two changes:
+
+- The new dimension is **selected**, so its handles are candidates at all, with a line
+  saying where to grab: *"Drag the round handle at the middle to move the label off the
+  line."*
+- The **Measure tool may grab a handle when idle** — before a new measurement has
+  begun. Scoped that tightly so it cannot interfere with one in progress.
+
+Switching to Select automatically would have been the easy fix and the wrong one:
+measuring is usually done several times in a row, and taking the tool away after each
+would be worse than the bug.
+
+The handles are drawn in the same state the press handler accepts them, because a
+grabbable handle you cannot see is no better than none. The condition appears in both
+places and a test asserts they stay in step.
+
+745 tests.
+
+## 3.45.1 — 2026-09-01 · build `784724f5`
+
+### The top button of a floating Draw or Edit bar was out of reach
+`.bar.float` is a flex column with `overflow:hidden`, and `.items` had `flex:1 1 auto`
+with **no `min-height:0`**. A flex child does not shrink below its content height
+unless that permits it — so the list grew to fit every button, the bar could not
+contain it, and whether you could see the first button depended on where the browser
+happened to leave the scroll.
+
+### Fourth time today, and the first three were my fault twice over
+`#askBody`, `#helpBody` and `#panelBody` had the **identical** omission this morning.
+I fixed all three **by name**, one after another, and never once swept for the
+pattern — which is exactly why the toolbars survived to be reported.
+
+`checks.js` now sweeps every CSS rule that declares `overflow:auto` on a growable flex
+child and refuses without `min-height:0`. Verified by removing it in a copy.
+
+Also added to the base `.items` rule. It already had `min-width:0`, which is the
+correct axis for a docked row — but a rule that is right only because another rule
+happens to override its direction is not right.
+
+737 tests.
+
+## 3.45.0 — 2026-09-01 · build `8ad3c171`
+
+### Layer edits are undoable
+The oldest open bug, and worse than it sounds. Layers were **already in the undo
+snapshot** — the only thing missing was recording a step. So changing a layer's
+colour, hiding it, locking it or marking it a guide left the history untouched, and
+Undo then undid **whatever you last drew** instead. Silently, and the layer change
+stayed.
+
+Five controls, all fixed. Adding and deleting a layer already recorded a step —
+deleting takes the objects on that layer with it, so an unrecorded delete would have
+been the worst of the set.
+
+The test sweeps every assignment to a layer field from a control, rather than checking
+the ones I thought of. That is how I found five rather than the two the tracker named.
+
+### The tracker was stale in five places
+Corrected against the device data, in `TODO.md`:
+
+| claimed | actually |
+|---|---|
+| B2 symbols with links break | fixed 3.22.1 |
+| F2 Array | built 3.37.0 |
+| R3 viewport culling | built 3.41.0 |
+| R6 spatial index | built 3.33.0 |
+| P5 `push()` at 1,193ms | **wrong by 270×** — 4.40ms on the device |
+
+Recorded rather than edited away, because what a list *claimed* matters when reading it
+later.
+
+736 tests.
+
 ## 3.44.0 — 2026-09-01 · build `871cf47e`
 
 ### Dragging kept grabbing a handle instead

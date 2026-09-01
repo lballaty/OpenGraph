@@ -637,6 +637,171 @@ G("Tab tracking");
     /setInterval\(beatTab,TAB_BEAT_MS\)/.test(srcAll));
 }
 
+// ---------- the last of the known bugs ----------
+G("Trimming an arc");
+{
+  /* B6. It was refused outright: "Trimming an arc further is not supported yet". The maths
+     is the circle case with one difference -- a circle wraps, so every gap between crossings
+     is a candidate; an arc has ENDS, and the piece tapped may be bounded by an end. */
+  const TAU=Math.PI*2, norm=a=>{a%=TAU;return a<0?a+TAU:a;};
+  const d=x=>x*Math.PI/180;
+  function trim(a0,sweep,cutsAbs,tapAbs){
+    const along=a=>{const rel=norm(a-a0);return sweep>=0?rel:-(norm(a0-a));};
+    const relAt=along(tapAbs);
+    const marks=cutsAbs.map(along)
+      .filter(x=>sweep>=0?(x>1e-9&&x<sweep-1e-9):(x<-1e-9&&x>sweep+1e-9))
+      .concat([0,sweep]).sort((p,q)=>sweep>=0?p-q:q-p);
+    if(marks.length<3)return "no crossing";
+    let lo=null,hi=null;
+    for(let i=0;i<marks.length-1;i++){
+      const A=marks[i],B=marks[i+1];
+      const inSeg=sweep>=0?(relAt>=A-1e-9&&relAt<=B+1e-9):(relAt<=A+1e-9&&relAt>=B-1e-9);
+      if(inSeg){lo=A;hi=B;break;}
+    }
+    if(lo===null)return "outside";
+    const atStart=Math.abs(lo)<1e-9, atEnd=Math.abs(hi-sweep)<1e-9;
+    if(atStart&&atEnd)return "whole arc";
+    if(!atStart&&!atEnd)return "middle piece";
+    return Math.round(Math.abs(atStart?(sweep-hi):lo)*180/Math.PI);
+  }
+  ok("tapping before the crossing keeps the far half",trim(0,d(180),[d(90)],d(45))===90);
+  ok("tapping after it keeps the near half",trim(0,d(180),[d(90)],d(135))===90);
+  ok("with two crossings, an end piece trims",trim(0,d(180),[d(60),d(120)],d(30))===120);
+  ok("and the other end piece trims",trim(0,d(180),[d(60),d(120)],d(150))===120);
+  /* An arc cannot have a hole, so a middle cut is refused rather than half-applied. */
+  ok("a middle piece is refused",trim(0,d(180),[d(60),d(120)],d(90))==="middle piece",
+    "cutting the middle would need two arcs, and one object cannot be two");
+  ok("no crossing means nothing to trim to",trim(0,d(180),[],d(45))==="no crossing");
+  /* The start and sweep arithmetic, including wraparound. */
+  const apply=(a0,sweep,lo,hi,atStart)=>({
+    a0:norm(atStart?a0+hi:a0), sw:atStart?(sweep-hi):lo});
+  let r=apply(0,d(180),0,d(90),true);
+  ok("removing the first part moves the start",Math.round(r.a0*180/Math.PI)===90&&
+    Math.round(r.sw*180/Math.PI)===90);
+  r=apply(0,d(180),d(90),d(180),false);
+  ok("removing the last part leaves the start alone",Math.round(r.a0*180/Math.PI)===0);
+  r=apply(d(270),d(180),0,d(180),true);
+  ok("a wrapping arc still normalises",Math.round(r.a0*180/Math.PI)===90,
+    "270 + 180 = 450, which must come back as 90");
+  ok("it reuses circleCrossings",/const cuts=circleCrossings\(o\)/.test(codeOf("trimArc")),
+    "an arc has a centre and a radius, so the circle solver already answers this");
+  ok("and the refusal is gone",!/Trimming an arc further is not supported/.test(srcAll));
+}
+
+G("Panel positions");
+{
+  /* B5. Three draggable panels set style.left directly with nothing stored, so a panel
+     dragged somewhere useful returned to its default on every open. */
+  ok("positions are recorded",/function rememberPanel/.test(srcAll));
+  ok("on drop, not on every move",
+    /rememberPanel\("help"/.test(srcAll)&&!/pointermove[\s\S]{0,120}rememberPanel/.test(srcAll),
+    "recording per move would write to storage sixty times a second");
+  ["help","ask","symbols"].forEach(id=>
+    ok(id+" records its position",new RegExp('rememberPanel\\("'+id+'"').test(srcAll)));
+  ["help","ask","symbols"].forEach(id=>
+    ok(id+" restores it",new RegExp('restorePanel\\("'+id+'"').test(srcAll)));
+  ok("restored on the next frame",/requestAnimationFrame\(\(\)=>restorePanel/.test(srcAll),
+    "a hidden panel has no size, and the clamp needs its width");
+  ok("clamped to the window that exists now",
+    /Math\.min\(p\.x,innerWidth-w-4\)/.test(codeOf("restorePanel")),
+    "a position saved in landscape puts a panel off the side in portrait");
+  ok("kept in the workspace, not the drawing",/panelPos:PANEL_POS/.test(codeOf("uiState")));
+  ok("and not in the document",!/panelPos/.test(codeOf("doc")),
+    "where you like a panel should not travel with a file you send");
+}
+
+G("Reordering a group");
+{
+  /* B4. A group reorders as a whole and that is the only order it has; the parts need
+     Ungroup. A reasonable rule, and an unreasonable thing to infer from nothing happening. */
+  /* The message is built by concatenation across a line break, so "moves as a whole" never
+     appears contiguously in the source. Matched in the two pieces it is actually written in. */
+  ok("the rule is stated",/as a whole/.test(srcAll)&&/order of the parts inside/.test(srcAll));
+  ok("it points at Ungroup",/ungroup first/i.test(codeOf("reorder")));
+  ok("said once, not per press",/reorderGroupNoted/.test(srcAll));
+  ok("and only when the selection is all groups",
+    /t\.every\(o=>o\.t==="group"\)/.test(codeOf("reorder")),
+    "with a mixture the loose objects do reorder, so the message would be wrong");
+}
+
+G("What an undo step holds");
+{
+  /* B3, decided rather than built. The test is whether undoing something would restore
+     WORK. The grid, the unit, the sheet and the view are settings, not work. */
+  const snap=(/const snapshot=\(\)=>JSON\.stringify\([^)]*\)/.exec(srcAll)||[""])[0];
+  ["e:S.entities","m:S.measures","l:S.layers"].forEach(k=>
+    ok(k+" is in the snapshot",snap.includes(k)));
+  ["gx","S.unit","sheet","title"].forEach(k=>
+    ok(k+" is deliberately out",!snap.includes(k),
+      "an Undo that put the grid back while leaving your last line would be a worse surprise"));
+  ok("the decision is recorded next to the code",
+    /VIEW settings, not drawing[\s\S]{0,20}content/.test(srcAll),
+    "the comment wraps, so the phrase is not contiguous");
+}
+
+// ---------- moving a dimension label ----------
+G("Dimension offset handle");
+{
+  /* Reported: the label cannot be grabbed and cannot be pulled out to offset. Everything
+     needed was present -- the mo handle, and hit testing correctly against the OFFSET line
+     rather than the raw points. What was missing was the state: a dimension is created
+     already offset, the offset handle is the only way to change that, and handles belong to
+     the Select tool. Finishing a measurement left you in Measure, so the next tap started
+     another measurement. Nothing said otherwise. */
+  ok("the offset handle exists",/k:"mo",round:true/.test(srcAll));
+  ok("hit testing uses the offset line, not the raw points",
+    /const G=dimGeom\(o\);\s*test\(dist\(projOnSeg\(p,G\.A,G\.B\)/.test(srcAll),
+    "the drawn line is offset from a-b, so testing a-b would miss what you can see");
+  ok("a new dimension is selected",/S\.sel=\[dim\]/.test(srcAll),
+    "otherwise its handles are not even candidates");
+  ok("and it says where to grab",/round handle at the middle/.test(srcAll));
+  /* The exception, and its scope. Switching to Select automatically would have been the
+     easy fix and the wrong one: measuring is usually done several times in a row. */
+  ok("the Measure tool can grab a handle when idle",
+    /S\.tool==="measure"&&\(!pend\.pts\|\|!pend\.pts\.length\)/.test(srcAll));
+  ok("the tool is NOT switched after measuring",
+    !/setTool\("select"\)[\s\S]{0,80}S\.measures\.push/.test(srcAll),
+    "taking the tool away after one measurement would be worse than the bug");
+  ok("the exception cannot interfere mid-measurement",
+    /!pend\.pts\.length/.test(srcAll),
+    "scoped to before the first point is placed");
+  /* Drawn in the same state it can be grabbed, or there is nothing to aim at. */
+  const both=(srcAll.match(/S\.tool==="measure"&&\(!pend\.pts\|\|!pend\.pts\.length\)/g)||[]).length;
+  ok("the press handler and the drawing agree",both===2,
+    both+" occurrence(s) \u2014 a grabbable handle you cannot see is no better than none");
+  ok("drawHandles honours it",/const measureIdle=/.test(codeOf("drawHandles")));
+}
+
+// ---------- layer edits are undoable ----------
+G("Layer edits and undo");
+{
+  /* B1, open since the tracker was written. Layers are already IN the undo snapshot -- the
+     only thing missing was recording one. So Undo after a layer edit undid whatever you last
+     DREW instead, silently, and the layer change stayed. Losing the wrong work is about as
+     bad as an undo can be, and it was the oldest open bug. */
+  ok("layers are in the snapshot",/l:S\.layers/.test(srcAll),
+    "so the fix is recording a step, not changing what a step holds");
+  ok("layers are restored",/S\.layers=o\.l/.test(codeOf("restore")));
+  /* Each control. A sweep rather than a spot check, because five were missing and I found
+     them by listing every assignment. */
+  const muts=[...srcAll.matchAll(/[^\n]*L\.(vis|lock|guide|color)=[^\n]*/g)].map(m=>m[0])
+    .filter(l=>/onclick|onchange/.test(l));
+  ok("every layer control records an undo step",
+    muts.length>0&&muts.every(l=>/push\(\)/.test(l)),
+    muts.filter(l=>!/push\(\)/.test(l)).map(l=>l.trim().slice(0,50)).join(" | "));
+  ok("visibility is one of them",muts.some(l=>/L\.vis=/.test(l)));
+  ok("colour is one of them",muts.some(l=>/L\.color=/.test(l)));
+  ok("lock is one of them",muts.some(l=>/L\.lock=/.test(l)));
+  ok("the guide flag is one of them",muts.some(l=>/L\.guide=/.test(l)));
+  ok("there are at least five",muts.length>=5,muts.length+" found");
+  /* Adding and deleting a layer already did. Deleting takes the objects on it, so an
+     unrecorded delete would have been the worst of the set. */
+  ok("adding a layer records a step",/push\(\);\s*const L=\{id:S\.nextLayer/.test(srcAll));
+  ok("deleting one records a step",
+    /push\(\);[\s\S]{0,200}S\.layers=S\.layers\.filter\(x=>x!==L\)/.test(srcAll),
+    "it takes the objects on that layer with it");
+}
+
 // ---------- grabbing a handle versus dragging ----------
 G("Handle versus drag");
 {

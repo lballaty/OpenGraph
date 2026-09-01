@@ -111,6 +111,27 @@ check("a canvas tap dismisses rather than being swallowed",
   /if\(anyBlockingModal\(\)\)\{closeBlockingModals\(\);return;\}/.test(src),
   "returning silently left no way to close by tapping");
 
+// --- a scroll container must be able to shrink -------------------------------
+/* A flex child does not shrink below its content height unless min-height:0 permits it, so
+ * overflow:auto on its own scrolls nothing: the child expands and the parent clips it. This
+ * has now been found FOUR times — #askBody, #helpBody, #panelBody, and the floating
+ * toolbars, where it put the top button out of reach. I fixed the first three by name and
+ * never swept, which is why the fourth survived. */
+const cssPart=html.slice(0,html.indexOf("</style>"));
+const shrinkBad=[];
+for(const m of cssPart.matchAll(/([^{}]+)\{([^}]*)\}/g)){
+  /* Comments stripped from the selector: a rule preceded by a comment captured the whole
+   * comment as its selector, so the failure named prose instead of the rule to fix. The
+   * fifth time a check of mine has read a comment. */
+  const sel=m[1].replace(/\/\*[\s\S]*?\*\//g,"").trim(), body=m[2];
+  if(!/overflow[^;]*(auto|scroll)/.test(body))continue;
+  if(!/flex:\s*1/.test(body))continue;
+  if(/min-height:0/.test(body))continue;
+  shrinkBad.push(sel.slice(0,60));
+}
+check("every growable scroll container can also shrink",!shrinkBad.length,
+  shrinkBad.join(", ")+" — add min-height:0 or it will not scroll");
+
 // --- no array concat inside a loop ------------------------------------------
 /* out = out.concat(x) inside a loop allocates a new array and copies everything built so
  * far on each pass. flattenAll did it and was called twice per pointer move over ~2,357
