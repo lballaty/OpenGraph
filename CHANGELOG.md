@@ -4,6 +4,105 @@ The **This build** line in Settings → About is a hash of the file's own conten
 Two copies showing the same one are the same file. Use it to tell builds apart —
 the version number alone will not, since several ship on the same date.
 
+## 3.37.0 — 2026-09-01 · build `a51feb46`
+
+### Array — repeat a selection at a spacing
+`Shift+A`, or Array on the selection bar. Across and down, with the spacing defaulting
+to the selection's own size so the first copy lands beside the original rather than on
+top of it — the fault paste had until 3.30.0, avoided by design this time.
+
+- Copies carry **no id** and arrive **unlocked**, as pasted ones do.
+- **Connectors are left out, and it says so**: a link's position comes from its two
+  ends, so a repeated one would point at nothing. Silently skipping part of a
+  selection is the fault Offset had.
+- Bounded by what the **drawing** can carry, not by the arithmetic: painting is
+  already the dominant cost at 79,480 points, so an array adding a hundred thousand
+  more is refused with the figure.
+
+Rectangular only. Polar needs a centre, a sweep and a rotate-or-not choice — a
+dialog of its own, for cases that do not come up.
+
+52 commands.
+
+### Two new diagnostics
+**Would decimation pay?** Painting is now the dominant cost and culling cannot help —
+your report shows **0% of entities off screen**, because 79,480 points live inside a
+handful of polylines rather than many small objects. So the question is whether those
+points land on distinct *pixels*:
+
+```
+points per pixel   12.4x  (2,204 points landing on 178 distinct pixels)
+   → most of the painting is invisible; decimation would pay
+```
+
+It samples one entity per pass rather than all of them, because walking everything to
+measure whether walking everything is necessary was exactly the earlier mistake. And
+it can conclude no.
+
+**Three paths that had never been profiled at all** — producing an SVG, building the
+document for a save, and parsing one on load. They run once rather than per frame, so
+they never appeared in a frame breakdown, but a five-second export on a large drawing
+is felt as the app hanging. Reported separately, and **anything over 400ms is logged
+even with profiling off**, so someone who hits it finds the reason without having had
+the foresight to switch measurement on.
+
+### Closed by measurement, not by work
+`R1` state machine · `R3` viewport culling · `R7` scratch registers · the undo worker.
+All four were on the list with my agreement; the device said no to each. Recorded in
+`TODO.md` with the figures.
+
+619 tests.
+
+## 3.36.0 — 2026-09-01 · build `264d020c`
+
+Two faults in my own spatial index, both found by a device report at 79,480 nodes.
+
+### The index gave up at low zoom
+The report said:
+
+```
+intersection snapping stood down: 38754 segments crowded near the pointer
+```
+
+38,754 is the **whole list**. At low zoom the tolerance is large in model units, so
+the query box spanned more than 4,096 cells of 40mm and my fallback handed back
+everything — defeating the index at exactly the zoom that needs it, and making the
+message a lie about crowding.
+
+The box is now **clamped** to 64 cells per axis rather than abandoned. A snap
+tolerance covering thousands of cells is wider than anything worth snapping to, so
+clamping loses nothing a person would notice, and unlike the fallback it keeps the
+narrowing.
+
+### Snapping was still 2.62ms after indexing
+Because I indexed the segments and left the **vertices** walking the whole drawing.
+The endpoint snap visited all 79,480 chain points and called `add()` on each, once
+per pointer move.
+
+A segment's endpoints *are* the chain vertices, so the narrowed set already holds
+every vertex that could be within tolerance. Arcs and text still get their own pass —
+there are few of them, because 79,480 points live inside a handful of large
+polylines.
+
+Two more per-move costs went with it:
+- **A full 77,508-segment filter on every snap**, copying the list to drop the few
+  objects being dragged. The exclusion happens on the narrowed set now.
+- The exclusion Set was built **only above four items**, so a small drag left it
+  null — and a null Set consulted from several loops silently ignores nothing, which
+  means a dragged object could snap to itself.
+
+### Confirmed working, from the same report
+`index narrowing 4 of 22,948 segments per snap (0.02%)` · undo history **6 steps at
+9.5MB**, against 59 steps at 78.8MB before · the autosave guard stood down at
+2,329KB · the node warning fired at 79,480 · pointer state clashes still zero.
+
+**Painting is now the dominant cost**: static rebuild 45–52ms, direct paint 65–72ms,
+20% of frames over 50ms. Culling will not help — the report shows 0% of entities off
+screen, because the drawing is a few very large polylines rather than many small
+objects. That needs decimation within a polyline at low zoom, which is the next piece.
+
+588 tests.
+
 ## 3.35.0 — 2026-09-01 · build `942671a5`
 
 ### Undo history is capped at 25 steps, and adjustable

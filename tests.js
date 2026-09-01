@@ -637,6 +637,73 @@ G("Tab tracking");
     /setInterval\(beatTab,TAB_BEAT_MS\)/.test(srcAll));
 }
 
+// ---------- array ----------
+G("Array");
+{
+  /* The one enhancement the data cleared: small, and what anyone laying out a fence, a row
+     of desks or ladder rungs asks for within minutes. */
+  const fn=codeOf("arraySelection");
+  ok("the original stays where it is",/if\(!c&&!r\)continue/.test(fn));
+  ok("copies get no id",/if\(q\.id!==undefined\)delete q\.id/.test(fn),
+    "two objects answering to one id makes a link point at the wrong one");
+  ok("copies arrive unlocked",/if\(q\.lock\)delete q\.lock/.test(fn),
+    "inheriting the lock gives you something you cannot move into place");
+  ok("links are excluded",/o\.t!=="link"/.test(fn),
+    "a link's position comes from its ends, so a repeated one points at nothing");
+  ok("and the exclusion is said, not silent",/a link follows the objects it joins/.test(fn),
+    "silently skipping part of a selection is the fault Offset had");
+  ok("measures go to the measure list",/isMeasureLike\(q\)/.test(fn));
+  ok("it respects the lock on the source",/S\.sel\.filter\(canModify\)/.test(fn));
+  /* Bounded by what the DRAWING can carry, not by the arithmetic: painting is already the
+     dominant cost at 79,480 points, so an array adding a hundred thousand more is not a
+     service. */
+  ok("an array that would overwhelm the drawing is refused",
+    /addedNodes>120000/.test(fn));
+  ok("and says how many it would have added",/points, which is more than/.test(fn));
+  const count=(objs,nodesEach,c,r)=>({made:objs*(c*r-1),nodes:objs*nodesEach*(c*r-1)});
+  ok("3 across of one object makes two copies",count(1,4,3,1).made===2);
+  ok("3 x 4 of two objects makes 22",count(2,4,3,4).made===22);
+  ok("1 x 1 makes none",count(1,4,1,1).made===0);
+  ok("the dialog says so rather than doing nothing",
+    /One across and one down makes no copies/.test(srcAll));
+  ok("a zero spacing is refused",/every copy lands on top of the original/.test(srcAll),
+    "the paste fault from 3.30.0, avoided by design this time");
+  /* Defaults from the selection's own size, so the first copy lands beside it. */
+  ok("the spacing defaults to the selection size",/w\*1\.2/.test(srcAll));
+  ok("the bounding box is built from objBBox",/objBBox\(o\)/.test(codeOf("openArrayDlg")),
+    "selectionBBox does not exist \u2014 the second helper I invented today");
+  /* Dismissable, which three dialogs were not until 3.21.2. */
+  ok("it is listed as a blocking dialog",/"arrayDlg"\]/.test(srcAll));
+  ok("and closeBlockingModals closes it",
+    /if\(\$\("arrayDlg"\)\.classList\.contains\("open"\)\)closeArrayDlg\(\)/.test(srcAll));
+  ok("there is a help entry",/i:"array-repeat"/.test(srcAll));
+}
+
+// ---------- new diagnostics ----------
+G("Diagnostics added");
+{
+  /* Painting is now the dominant cost, and culling cannot help: the report shows 0% of
+     entities off screen because 79,480 points live in a handful of polylines. The question
+     is whether those points land on distinct PIXELS. */
+  const md=codeOf("measureDecimation");
+  ok("decimation potential is measured",!!md);
+  ok("it samples one entity per pass",/decimProbe\+\+%list\.length/.test(md),
+    "walking everything to measure whether walking everything is necessary was the earlier mistake");
+  ok("it counts distinct pixels",/Math\.round\(s2\.x\)/.test(md));
+  const pr=codeOf("profReport");
+  ok("the verdict can say decimation would pay",/most of the painting is invisible/.test(pr));
+  ok("and can say it would not",/the points are distinct; decimation would only lose detail/.test(pr));
+  /* Three paths that had never been profiled at all, because they run once. */
+  ok("one-off operations are timed",/function timeOnce/.test(srcAll));
+  ["SVG export","building the document","opening the drawing"].forEach(n=>
+    ok("\u201c"+n+"\u201d is timed",srcAll.includes('timeOnce("'+n+'"')));
+  ok("a slow one is logged even with profiling off",/if\(ms>400\)logLine/.test(codeOf("timeOnce")),
+    "someone who hits a four-second export should find the reason without foresight");
+  ok("they are reported separately from frame time",/one-off operations:/.test(pr),
+    "a once-per-export cost never appears in a frame breakdown");
+  ok("and reset with the profiler",/delete ONCE\[k\]/.test(codeOf("profReset")));
+}
+
 // ---------- undo history size ----------
 G("Undo history size");
 {
@@ -786,8 +853,12 @@ G("Spatial index");
     /segIndexAll!==!!all/.test(codeOf("segIndexFor")),
     "the visible and hidden sets are different lists");
   /* A pathological tolerance must not sweep the grid more slowly than the loop. */
-  ok("an absurd tolerance falls back to the full list",
-    /return segs;/.test(codeOf("segsNear")));
+  /* This asserted the fallback that a device report proved harmful: it fired at low zoom
+     and handed back all 38,754 segments, defeating the index exactly where it was needed.
+     The box is clamped now, so the assertion is inverted. */
+  ok("an absurd tolerance is clamped rather than abandoned",
+    !/return segs;/.test(codeOf("segsNear")),
+    "falling back to the full list defeated the index at low zoom");
   /* Every per-move snap must use it, or the cost stays. */
   /* 180 characters was too short for the near branch, whose comment sits between the guard
      and the call. Widened rather than removed: the point is that each branch reaches the
@@ -801,6 +872,48 @@ G("Spatial index");
   ok("the perpendicular set is centred on the pointer, not the anchor",
     /if\(S\.snaps\.perp&&anchor\) for\(const s of segsNear\(raw,/.test(srcAll),
     "the candidate is the foot of the perpendicular, useful only if it is near the pointer");
+  /* Two faults in my own index, both found by a device report at 79,480 nodes. */
+
+  /* 1. The fallback returned EVERYTHING at low zoom. A report showed "intersection
+        snapping stood down: 38754 segments crowded near the pointer" -- 38,754 being the
+        whole list: the tolerance is large in model units at low zoom, the query box spanned
+        more than 4,096 cells of 40mm, and the index gave up. That both defeated the index
+        and made the message a lie about crowding. */
+  ok("the query box is clamped, not abandoned",
+    /const MAX_SPAN=64/.test(codeOf("segsNear"))&&!/if\(\(x1-x0\+1\)\*\(y1-y0\+1\)>4096\)return segs;/.test(srcAll),
+    "returning the whole list defeats the index at exactly the zoom that needs it");
+  /* clamp returns the span along ONE axis; the number of cells visited is its square. My
+     first version compared the span against a cell COUNT and failed on correct code. */
+  const clamp=(tol,cell)=>Math.min(64,Math.max(1,Math.ceil((tol*2)/cell)));
+  [[10,1],[100,5],[2000,64],[200000,64]].forEach(([tol,want])=>
+    ok("a "+tol+"mm tolerance spans "+want+" cells per axis",clamp(tol,40)===want,
+      "got "+clamp(tol,40)));
+  ok("the worst case visits a bounded number of cells",clamp(200000,40)**2===4096,
+    "64 x 64 \u2014 enough to be worth doing, small enough to stay fast");
+
+  /* 2. Snapping still measured 2.62ms after the segment loop was indexed, because the
+        endpoint snap walked all 79,480 chain points calling add() on each. I indexed the
+        segments and left the vertices walking the whole drawing. */
+  const sp=codeOf("snapPointInner");
+  ok("vertices come from the narrowed segments",
+    /for\(const g of segsNear\(raw,tol\*2,false\)\)/.test(sp),
+    "a segment's endpoints ARE the chain vertices");
+  ok("no full chain walk remains for endpoints",
+    !/ch\.forEach\(p=>add\(p,1,"end"/.test(sp));
+  ok("arcs and text still get a pass, since they have no segments",
+    /o\.t==="arc"/.test(sp)&&/text origin/.test(sp),
+    "few in number: 79,480 points live inside a handful of polylines");
+  ok("the eager segment filter is gone",
+    !/segments\(\)\.filter\(s=>/.test(sp),
+    "it copied 77,508 segments per pointer move to drop the few being dragged");
+  /* The exclusion Set was built only above four items, which left it null for a small
+     drag -- and a null Set consulted from several loops silently ignores nothing, so a
+     dragged object would have snapped to itself. */
+  ok("the ignore set is built whenever there is anything to ignore",
+    /igSet=ignore&&ignore\.length\?new Set/.test(sp));
+  ok("and every exclusion consults it",!/ignore\.includes/.test(sp),
+    "a mix of Set and includes is how one path ends up ignoring nothing");
+
   /* The verdict I got wrong. */
   ok("the pooling verdict is judged on cost, not count",
     /rebuildMs>4/.test(codeOf("profReport")),

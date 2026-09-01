@@ -443,10 +443,11 @@
   #scaleDlg{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:31;
     background:var(--panel);border:1px solid var(--hair);border-radius:10px;padding:16px;
     width:min(360px,92vw);box-shadow:0 18px 50px rgba(0,0,0,.55);display:none}
+  #arrayDlg,
   #offsetDlg{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:31;
     background:var(--panel);border:1px solid var(--hair);border-radius:10px;padding:16px;
     width:min(340px,92vw);box-shadow:0 18px 50px rgba(0,0,0,.55);display:none}
-  #offsetDlg.open{display:block}
+  #arrayDlg.open,#offsetDlg.open{display:block}
   #scaleDlg.open{display:block}
   #boardDlg.open{display:block}
   #askval.open{display:block}
@@ -571,6 +572,7 @@
       <button id="aLayer">Layer ▾</button>
       <button id="aSplit">Split at intersections</button>
       <button id="aLock">Lock</button>
+      <button id="aArray">Array</button>
       <button id="aJoin">Join</button>
       <button id="aFront">To front</button>
       <button id="aBack">To back</button>
@@ -1040,6 +1042,19 @@
   <div class="btns" id="openMenuClose"><button class="t mini" id="bOpenMenuClose">Close</button></div>
 </div>
 
+<div id="arrayDlg" role="dialog" aria-modal="true" aria-label="Array">
+  <h3>Array</h3>
+  <p class="note" id="arrNote"></p>
+  <div class="row"><label for="arrCols">Across</label><input type="number" id="arrCols" class="f" step="1" min="1" max="500"><span class="wtval">copies</span></div>
+  <div class="row"><label for="arrDx">Spacing</label><input type="number" id="arrDx" class="f" step="any"><span class="wtval" id="arrUx">mm</span></div>
+  <div class="row"><label for="arrRows">Down</label><input type="number" id="arrRows" class="f" step="1" min="1" max="500"><span class="wtval">copies</span></div>
+  <div class="row"><label for="arrDy">Spacing</label><input type="number" id="arrDy" class="f" step="any"><span class="wtval" id="arrUy">mm</span></div>
+  <p class="note" id="arrCount"></p>
+  <div class="btns" style="margin-top:8px">
+    <button class="t mini" id="arrOk">Repeat</button>
+    <button class="t mini" id="arrCancel">Cancel</button>
+  </div>
+</div>
 <div id="offsetDlg" role="dialog" aria-modal="true" aria-label="Offset">
   <h3>Offset</h3>
   <p class="note" id="offNote"></p>
@@ -2206,6 +2221,67 @@ function offsetSelection(dist,outward,keep){
   if(failed.length)logLine("offset: skipped "+failed.length+" object(s) \u2014 "+failed.join(", "),"warn");
   return{made:made.length,failed:failed.length};
 }
+/* ---------- array ----------
+   Repeat a selection at a spacing. Small, and the thing anyone laying out a fence, a row of
+   desks or a ladder rung asks for within minutes -- copy-paste-nudge fifteen times is the
+   workaround it removes.
+
+   Rectangular only. Polar was tempting and is deliberately left out: it needs a centre, a
+   sweep and a rotate-or-not choice, which is a dialog of its own, and rectangular covers
+   the cases that actually come up. */
+function arraySelection(cols,rows,dx,dy){
+  /* Links are excluded: a link's position is derived from its two ends, so a repeated one
+     would either point at the original pair or at nothing. Said rather than silently
+     dropped, which is the fault Offset had. */
+  const all=S.sel.filter(canModify);
+  const src=all.filter(o=>o.t!=="link");
+  if(!src.length){
+    note(all.length?"A connector cannot be repeated \u2014 it follows the objects it joins."
+      :"Select something to repeat first.");
+    return false;
+  }
+  const n=cols*rows;
+  /* Bounded, and the bound is about the DRAWING rather than the arithmetic: 79,480 points
+     in a few polylines already makes painting the dominant cost, so an array that adds a
+     hundred thousand more is not a service. */
+  const addedNodes=countNodes(src)*(n-1);
+  if(addedNodes>120000){
+    note("That would add about "+addedNodes.toLocaleString()+" points, which is more than "+
+      "the drawing can carry comfortably. Try fewer copies.");
+    return false;
+  }
+  push();
+  const made=[];
+  for(let c=0;c<cols;c++)for(let r=0;r<rows;r++){
+    if(!c&&!r)continue;                       // the original stays where it is
+    src.forEach(o=>{
+      const q=clone(o);
+      translateObj(q,dx*c,dy*r);
+      /* The id is DROPPED rather than reissued. Paste remaps ids so a copied link still
+         joins the copied objects; an array has no links to preserve -- a link whose ends are
+         repeated has no single correct target -- so the copies simply carry no id and get
+         one on demand if something later links to them. stripIds() was my first thought and
+         does not exist; this is what paste actually does, minus the remapping. */
+      if(q.id!==undefined)delete q.id;
+      /* A copy arrives unlocked, as a pasted one does: inheriting the lock would produce
+         something you cannot move into place. */
+      if(q.lock)delete q.lock;
+      setLayerDeep(q,o.l);
+      if(isMeasureLike(q))S.measures.push(q);else S.entities.push(q);
+      made.push(q);
+    });
+  }
+  S.sel=src.concat(made);
+  draw();
+  if(all.length>src.length)
+    note("Repeated "+src.length+" object"+(src.length===1?"":"s")+
+      ", leaving out "+(all.length-src.length)+" connector"+
+      (all.length-src.length===1?"":"s")+": a link follows the objects it joins.");
+  logLine("array: "+cols+"x"+rows+" of "+src.length+" object(s), "+made.length+" made","info");
+  note("Repeated into "+cols+" x "+rows+" \u2014 "+made.length+" new object"+
+    (made.length===1?"":"s")+".");
+  return true;
+}
 /* ---------- join ----------
    Split, Break and Explode all cut a line into pieces, and none of them had an inverse.
    Undo puts a split back, but only immediately and not once you have drawn since -- so a
@@ -3020,20 +3096,41 @@ function snapPointInner(sp,ignore){
   /* ignore is at most a handful of entities, so a Set is not worth building per call --
      but segments() can return tens of thousands, so the guard order matters: the cheap
      !ignore test short-circuits before any lookup. */
-  const igSet=ignore&&ignore.length>4?new Set(ignore):null;
-  const segs=segments().filter(s=>!ignore||(igSet?!igSet.has(s.e):!ignore.includes(s.e)));
+  /* Always a Set when there is anything to ignore. It was built only above four items, on
+     the reasoning that includes() is cheaper for a short list -- true, but the exclusion is
+     now consulted from several loops, and a null Set there silently ignores nothing. A
+     dragged object would have snapped to itself. */
+  const igSet=ignore&&ignore.length?new Set(ignore):null;
+  /* No eager filter. This copied all 77,508 segments on EVERY pointer move just to drop the
+     handful being dragged -- a full array pass per snap, to exclude a few objects. The
+     exclusion now happens on the narrowed set, where it costs nothing. */
+  const segs=segments();
+  const keep=s=>!igSet||!igSet.has(s.e);
 
   if(S.snaps.end){
+    /* Vertices come from the NARROWED segments, not from walking every chain. The old loop
+       visited all 79,480 points and called add() on each, once per pointer move -- which is
+       why snapping still measured 2.62ms after the segment loop was indexed: I indexed the
+       segments and left the vertices walking the whole drawing.
+
+       A segment's endpoints ARE the chain vertices, so the narrowed set already holds every
+       vertex that could possibly be within tolerance. */
+    for(const g of segsNear(raw,tol*2,false)){
+      if(!keep(g))continue;
+      add(g.a,1,"end","endpoint");add(g.b,1,"end","endpoint");
+    }
+    /* Arcs and text have no segments, and there are few of them: a pass over top-level
+       entities is a handful of items even on a drawing of 79,480 points, because those
+       points live inside a few large polylines. */
     for(const{o,root}of flattenAll(S.entities)){
-      if(!visible(root)||(ignore&&ignore.includes(root)))continue;
-      const ch=chainOf(o);if(ch)ch.forEach(p=>add(p,1,"end","endpoint"));
-      else if(o.t==="arc"){const a=arcPts(o,2);add(a[0],1,"end","arc end");add(a[a.length-1],1,"end","arc end");}
+      if(!visible(root)||(igSet&&igSet.has(root)))continue;
+      if(o.t==="arc"){const a=arcPts(o,2);add(a[0],1,"end","arc end");add(a[a.length-1],1,"end","arc end");}
       else if(o.t==="text")add(o.p,1,"end","text origin");
     }
-    for(const m of S.measures){if(ignore&&ignore.includes(m))continue;add(m.a,1,"end","measure end");add(m.b,1,"end","measure end");}
+    for(const m of S.measures){if(igSet&&igSet.has(m))continue;add(m.a,1,"end","measure end");add(m.b,1,"end","measure end");}
   }
   if(S.snaps.center) for(const{o,root}of flattenAll(S.entities))
-    if(visible(root)&&(o.t==="circle"||o.t==="arc")&&!(ignore&&ignore.includes(root))) add(o.c,1,"center","centre");
+    if(visible(root)&&(o.t==="circle"||o.t==="arc")&&!(igSet&&igSet.has(root))) add(o.c,1,"center","centre");
   /* A midpoint can only be within tol of the pointer if the segment is, so the same
      narrowing applies -- with the tolerance widened by half the cell to be safe. */
   if(S.snaps.mid) for(const s of segsNear(raw,tol*2,false))
@@ -3084,7 +3181,7 @@ function snapPointInner(sp,ignore){
     if(PROF.on){MEAS.snapCalls++;MEAS.segsExamined+=segs.length;MEAS.segsNear+=local.length;}
     for(const s of local) add(projOnSeg(raw,s.a,s.b).p,5,"near","on line");
     for(const{o,root}of flattenAll(S.entities)){
-      if(!visible(root)||(ignore&&ignore.includes(root)))continue;
+      if(!visible(root)||(igSet&&igSet.has(root)))continue;
       if(o.t!=="circle"&&o.t!=="arc")continue;
       const d=dist(raw,o.c);if(d<1e-9)continue;
       let p={x:o.c.x+(raw.x-o.c.x)/d*o.r,y:o.c.y+(raw.y-o.c.y)/d*o.r};
@@ -3355,6 +3452,12 @@ defIntent("inspect",{},()=>({
    APP_VERSION before initialization" and stopped the whole script, which is why the API
    was not defined at all on the first attempt. The execution harness caught it; a source
    check could not have. */
+/* Applied here, after every definition exists. Names are what a person would recognise in
+   a log, not the function names. */
+svgOut=timeOnce("SVG export",svgOut);
+doc=timeOnce("building the document",doc);
+loadDoc=timeOnce("opening the drawing",loadDoc);
+
 window.draftingGrid={
   intent:applyIntent, intents:applyIntents,
   ops:()=>Object.keys(INTENTS).sort(),
@@ -3429,11 +3532,21 @@ function segsNear(p,tol,all){
   const{cell,map,segs}=ix;
   const out=[];
   const seen=new Set();
-  const x0=Math.floor((p.x-tol)/cell), x1=Math.floor((p.x+tol)/cell);
-  const y0=Math.floor((p.y-tol)/cell), y1=Math.floor((p.y+tol)/cell);
-  /* A pathological tolerance would sweep the whole grid, which would be slower than the
-     loop it replaces. Fall back rather than crawl. */
-  if((x1-x0+1)*(y1-y0+1)>4096)return segs;
+  /* The tolerance is capped rather than surrendered to. A device report showed
+     "intersection snapping stood down: 38754 segments crowded near the pointer" -- 38,754
+     being the WHOLE list: at low zoom the tolerance is large in model units, the query box
+     spanned more than 4,096 cells of 40mm, and my fallback handed back everything. Which
+     both defeated the index and made the stand-down message a lie about crowding.
+
+     Sweeping tens of thousands of cells really would be slower than the loop, so the box is
+     SHRUNK to a sensible span instead. A snap tolerance covering thousands of cells is a
+     tolerance far wider than anything worth snapping to, so clamping it loses nothing a
+     person would notice -- and unlike the fallback it keeps the narrowing. */
+  const MAX_SPAN=64;
+  const span=Math.min(MAX_SPAN,Math.max(1,Math.ceil((tol*2)/cell)));
+  const half=span*cell/2;
+  const x0=Math.floor((p.x-half)/cell), x1=Math.floor((p.x+half)/cell);
+  const y0=Math.floor((p.y-half)/cell), y1=Math.floor((p.y+half)/cell);
   for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
     const list=map.get(x+","+y);
     if(!list)continue;
@@ -3447,6 +3560,30 @@ function segsNear(p,tol,all){
   if(over)for(let i=0;i<over.length;i++)if(!seen.has(over[i])){seen.add(over[i]);out.push(segs[over[i]]);}
   return out;
 }
+
+/* Three paths that had never been profiled at all: producing an SVG, building the document
+   for a save, and parsing one on load. Each runs once rather than per frame, so they never
+   appeared in a frame-time breakdown -- but a five-second export on a 79,480-point drawing
+   is exactly the sort of thing a person experiences as the app hanging, and nothing in the
+   report would have shown it.
+
+   Wrapped rather than edited, since each has several exits. */
+function timeOnce(name,fn){
+  return function(){
+    const t0=pnow();
+    try{return fn.apply(this,arguments);}
+    finally{
+      const ms=pnow()-t0;
+      ONCE[name]=ONCE[name]||{ms:0,n:0};
+      ONCE[name].ms+=ms;ONCE[name].n++;
+      /* Logged when slow enough to be felt, whether or not measurement is on: a person who
+         hits a four-second export should find the reason in the log without having had the
+         foresight to switch profiling on first. */
+      if(ms>400)logLine(name+" took "+(ms/1000).toFixed(1)+"s","warn");
+    }
+  };
+}
+const ONCE={};
 
 /* ---------- profiler ----------
    Built because every performance figure so far came from my own machine, and the device
@@ -3486,7 +3623,16 @@ const MEAS={
   stateClashes:0, clashKinds:{},
   culled:0, drawn:0,
   allocs:0, allocFrames:0,
-  segsExamined:0, segsNear:0, snapCalls:0
+  segsExamined:0, segsNear:0, snapCalls:0,
+  /* Would decimation pay? Painting is now the dominant cost, and culling cannot help
+     because the points live inside a few very large polylines rather than many small
+     objects. The question is whether those points land on distinct PIXELS: 2,000 points
+     across 200 pixels is 1,800 wasted line segments that no cull can remove.
+
+     Counted as points drawn versus distinct pixel positions among them. If the ratio is
+     near 1 the drawing genuinely needs every point and decimation would only lose
+     fidelity; if it is 10 or more, nine tenths of the painting is invisible. */
+  ptsDrawn:0, ptsDistinct:0, decimFrames:0
 };
 /* The FSM question. These flags are meant to be mutually exclusive -- you cannot be
    panning and box-selecting and dragging at once -- but nothing enforces it, and a dropped
@@ -3629,6 +3775,14 @@ function profReport(reason){
   /* Each of these says what it DECIDES, not just what it counted. A number without its
      consequence gets read once and forgotten; a number with a verdict attached is a
      decision someone can act on or argue with. Every one can come back "not needed". */
+  /* One-off operations, which never appear in a frame breakdown because they happen once.
+     A four-second export is felt as the app hanging and would not have shown up anywhere. */
+  const onceKeys=Object.keys(ONCE);
+  if(onceKeys.length){
+    L.push("one-off operations:");
+    onceKeys.sort((a,b)=>ONCE[b].ms-ONCE[a].ms).forEach(k=>
+      L.push("   "+k.padEnd(24)+(ONCE[k].ms/ONCE[k].n).toFixed(0)+"ms each \u00d7"+ONCE[k].n));
+  }
   L.push("architecture questions, from this run:");
   if(!PROF.frames)L.push("   (nothing measured yet \u2014 draw something with measurement on)");
   else{
@@ -3655,6 +3809,15 @@ function profReport(reason){
       rebuildMs.toFixed(2)+"ms each"+
       (rebuildMs>4?"  \u2192 allocation is costing real time; pooling worth measuring"
         :"  \u2192 cheap enough that pooling would buy nothing"));
+    /* Would decimation pay? The answer decides whether to build it, and it can be no. */
+    if(MEAS.decimFrames){
+      const ratio=MEAS.ptsDistinct?MEAS.ptsDrawn/MEAS.ptsDistinct:1;
+      L.push("   points per pixel       "+ratio.toFixed(1)+"x  ("+
+        MEAS.ptsDrawn.toLocaleString()+" points landing on "+
+        MEAS.ptsDistinct.toLocaleString()+" distinct pixels)"+
+        (ratio>4?"  \u2192 most of the painting is invisible; decimation would pay"
+          :"  \u2192 the points are distinct; decimation would only lose detail"));
+    }
     if(MEAS.snapCalls){
       const pct=MEAS.segsExamined?(MEAS.segsNear/MEAS.segsExamined*100):0;
       L.push("   index narrowing         "+Math.round(MEAS.segsNear/MEAS.snapCalls)+
@@ -3677,6 +3840,8 @@ function profReset(){
   MEAS.stateClashes=0;MEAS.clashKinds={};
   MEAS.culled=MEAS.drawn=MEAS.allocs=MEAS.allocFrames=0;
   MEAS.segsExamined=MEAS.segsNear=MEAS.snapCalls=0;
+  MEAS.ptsDrawn=MEAS.ptsDistinct=MEAS.decimFrames=0;
+  Object.keys(ONCE).forEach(k=>delete ONCE[k]);
   PROF.frames=PROF.blits=PROF.directPaints=PROF.rebuilds=PROF.slow=0;
   PROF.frameMs=PROF.worstMs=0;
   PROF.phase={};PROF.count={};PROF.keyChanges={};
@@ -3760,7 +3925,27 @@ function staticKey(){
     selKey+"|"+
     S.layers.map(l=>(l.vis?1:0)+(l.guide?2:0)+l.color).join("");
 }
+/* Sampled during a static paint. One entity per pass rather than all of them, cycled, so
+   the measurement cost stays flat however large the drawing -- the mistake I made with the
+   locality counter, which walked everything to measure whether walking everything was
+   necessary. */
+let decimProbe=0;
+function measureDecimation(){
+  if(!PROF.on)return;
+  const list=S.entities.filter(e=>visible(e)&&e.t==="poly"&&Array.isArray(e.p)&&e.p.length>32);
+  if(!list.length)return;
+  const e=list[decimProbe++%list.length];
+  const seen=new Set();
+  for(let i=0;i<e.p.length;i++){
+    const s2=toS(e.p[i]);
+    seen.add(Math.round(s2.x)+","+Math.round(s2.y));
+  }
+  MEAS.ptsDrawn+=e.p.length;
+  MEAS.ptsDistinct+=seen.size;
+  MEAS.decimFrames++;
+}
 function paintStatic(g){
+  measureDecimation();
   /* Culling potential, counted rather than assumed. If nothing is ever off screen, culling
      is worthless however elegant; if most of the drawing is, it is the largest win
      available. At the zoom where a whole site is visible the answer should be near zero,
@@ -6999,8 +7184,8 @@ const LIB_PREFIX="dg:lib:";   // one key per named library, so sets stay separab
    you have to remember -- and several builds shipped on the same date anyway, so neither
    answered "which copy am I looking at". A content hash cannot drift: two files showing
    the same one ARE the same file. */
-const APP_NAME="Drafting Grid", APP_VERSION="3.35.0", APP_BUILD="2026-08-29";
-const APP_HASH="942671a5";
+const APP_NAME="Drafting Grid", APP_VERSION="3.37.0", APP_BUILD="2026-08-29";
+const APP_HASH="a51feb46";
 const AUTO_KEY="dg:auto";
 const APP_DOC="drafting-grid";
 const LAYER_APP="drafting-grid-layer";   // one layer and its contents, as a file
@@ -9391,7 +9576,7 @@ $("fsExit").onclick=()=>{setImmersive(false);nativeFull(false);};
    straight on the live canvas and silently added geometry to the drawing, and every
    single-letter shortcut still fired underneath. Both are now closed off in one place;
    any overlay added later needs one line here and one in the touchmove allowlist. */
-const BLOCKING_MODALS=["panel","saveMenu","openMenu","saveAs","textIO","help","confirm","askval","boardDlg","scaleDlg","offsetDlg"];
+const BLOCKING_MODALS=["panel","saveMenu","openMenu","saveAs","textIO","help","confirm","askval","boardDlg","scaleDlg","offsetDlg","arrayDlg"];
 const anyBlockingModal=()=>BLOCKING_MODALS.some(id=>$(id).classList.contains("open"));
 function syncScrim(){
   // The wide-screen layout docks Settings as a real column rather than an overlay, so
@@ -9472,6 +9657,7 @@ function closeBlockingModals(){
   if($("boardDlg").classList.contains("open"))closeBoardDlg();
   if($("scaleDlg").classList.contains("open"))closeScaleDlg();
   if($("offsetDlg").classList.contains("open"))closeOffsetDlg();
+  if($("arrayDlg").classList.contains("open"))closeArrayDlg();
   syncScrim();
 }
 
@@ -9648,6 +9834,7 @@ $("aLock").onclick=()=>{
     ? "Locked. It can still be selected, but nothing else, until you unlock it."
     : "Unlocked.");
 };
+$("aArray").onclick=()=>CMD.array.run();
 $("aJoin").onclick=()=>CMD.join.run();
 $("aFront").onclick=()=>CMD.front.run();
 $("aBack").onclick=()=>CMD.back.run();
@@ -9755,6 +9942,7 @@ const CMDS=[
  {id:"backward",bar:2,lbl:"Backward",    def:"shift+j",     run:()=>runOnSelection(()=>reorder("backward"),"reorder")},
  {id:"scale",   bar:2,lbl:"Resize",     def:"shift+s",     run:()=>runOnSelection(openScaleDlg,"resize")},
  {id:"explode", bar:2,lbl:"Explode",    def:"j",           run:()=>runOnSelection(explodeSelected,"explode")},
+ {id:"array",   bar:2,lbl:"Array",        def:"shift+a",     run:()=>runOnSelection(openArrayDlg,"array")},
  {id:"join",    bar:2,lbl:"Join",         def:"shift+m",     run:()=>runOnSelection(joinSelection,"join")},
  {id:"merge",   bar:2,lbl:"Merge",      def:"",            run:()=>runOnSelection(mergeGroup,"merge")},
  {id:"fit",     bar:2,lbl:"Fit",        def:"f",           run:()=>fit()},
@@ -9858,6 +10046,7 @@ const WHATIS=[
  {c:"select",d:"Picks things up so you can move, style or delete them.",y:"Nothing can be changed until it is selected. This is the tool you come back to between every other one."},
  {b:"Long press on empty canvas",d:"Brings up your five most-used commands where you pressed.",y:"Faster than reaching for a toolbar, and it learns — the five come from the same usage counts as Most used first."},
  {b:"Lock",d:"Locks the selection so it cannot be moved, styled or deleted.",y:"A survey or a boundary you are drawing over. It stays selectable so the padlock is reachable — that is the only way back."},
+ {c:"array",d:"Repeats the selection at a spacing, across and down.",y:"Rectangular only. A negative spacing goes the other way. Connectors are left out, since a link follows the objects it joins."},
  {c:"join",d:"Reconnects split or broken lines into one, where their ends meet.",y:"The inverse of Split and Break. Chains through as many pieces as touch, so all six sides of a rectangle become one shape in a single go."},
  {c:"front",d:"Moves the selection in front of everything else.",y:"When a shape you drew earlier is hidden behind one you drew later — draw order is the order things were made."},
  {c:"back",d:"Moves the selection behind everything else.",y:"Putting a zone, a background or a hatched area under the things that sit on it."},
@@ -10033,6 +10222,7 @@ const HOWTO=[
  {t:"Why has autosave stopped",i:"autosave-limit",k:"autosave stopped not saving too large standing down storage full limit",w:"A drawing over 1.5MB is too large for autosave — save to a file instead. Settings → Autosave says so",c:"save"},
  {t:"The app is open in several tabs",i:"several-tabs",k:"tabs tab two several many shared storage last save wins conflict overwrite",w:"They share one storage, so the last to save wins. Close the others, or keep to one tab",c:null},
  {t:"Bring something in front of or behind",i:"order-depth",k:"front back forward backward depth order stack on top underneath behind hidden covered",w:"Select it, then To front or To back on the bottom bar",c:"front"},
+ {t:"Repeat something at a spacing",i:"array-repeat",k:"array repeat rows and columns row column grid pattern duplicate many copies several spacing evenly spaced fence posts desks rungs studs tiles paving series line of",w:"Select it, then Array on the bottom bar",c:"array"},
  {t:"Offset — make a parallel copy at a set distance",i:"offset-parallel",k:"offset parallel copy alongside inset outset clearance second face wall thickness margin duplicate",w:"Select it, then tap the Offset button on the Edit bar",c:"offset"},
  {t:"Offset refused, or nothing happened",i:"offset-limits",k:"offset parallel copy wont work does not work refused nothing happened group text curve arc dimension",w:"Offset works on lines, polylines, rectangles, circles and arcs. Ungroup a group first; turn a curve off in Style first",c:"offset"},
  {t:"Draw a board or enclosure to an exact size",i:"draw-board-outline",k:"board pcb enclosure panel outline holes mounting pattern eurocard hat shield exact size",w:"Tap the Board button on the Draw bar",c:"board"},
@@ -10417,7 +10607,7 @@ const BARS={1:{float:false,col:false,vert:false,x:60,y:80,w:330,h:190},
    Now: two-bar arrows for the full moves (front, back), filled and hollow triangles for
    the single steps (forward, backward). Distinct in shape, and distinct as a pair, so
    "all the way" and "one step" do not look alike either. */
-const ICONS={"select": "↖", "line": "╱", "rect": "▭", "circle": "○", "polygon": "⬡", "link": "⚭", "board": "▥", "scale": "\u21f2", "front": "\u2588", "back": "\u2591", "join": "\u27f7", "forward": "\u25b2", "backward": "\u25bd", "offset": "║", "arc": "◠", "text": "T", "measure": "↔", "erase": "◫", "half": "◗", "sketch": "∿", "mid2": "⊙", "symbols": "✦", "pan": "✋", "snap": "⊹", "ortho": "⊾", "polar": "✳", "save": "💾", "open": "📂", "undo": "↶", "redo": "↷", "delete": "🗑", "copy": "⧉", "paste": "📋", "fit": "⛶", "selall": "▣", "group": "⊞", "ungroup": "≣", "merge": "⧈", "split": "✂", "trim": "✄", "extend": "⇥", "brk": "┄", "explode": "⁂", "label": "🏷", "settings": "⚙", "keys": "?", "immersive": "⤡", "typeval": "#", "finish": "✓", "close": "⬚", "cancel": "⎋"};
+const ICONS={"select": "↖", "line": "╱", "rect": "▭", "circle": "○", "polygon": "⬡", "link": "⚭", "board": "▥", "scale": "\u21f2", "front": "\u2588", "back": "\u2591", "join": "\u27f7", "array": "\u2237", "forward": "\u25b2", "backward": "\u25bd", "offset": "║", "arc": "◠", "text": "T", "measure": "↔", "erase": "◫", "half": "◗", "sketch": "∿", "mid2": "⊙", "symbols": "✦", "pan": "✋", "snap": "⊹", "ortho": "⊾", "polar": "✳", "save": "💾", "open": "📂", "undo": "↶", "redo": "↷", "delete": "🗑", "copy": "⧉", "paste": "📋", "fit": "⛶", "selall": "▣", "group": "⊞", "ungroup": "≣", "merge": "⧈", "split": "✂", "trim": "✄", "extend": "⇥", "brk": "┄", "explode": "⁂", "label": "🏷", "settings": "⚙", "keys": "?", "immersive": "⤡", "typeval": "#", "finish": "✓", "close": "⬚", "cancel": "⎋"};
 /* User overrides, edited in the Guide & shortcuts panel and stored with the other
    per-device UI state. Kept separate from ICONS so "Restore defaults" is a matter of
    emptying this rather than reconstructing the originals. */
@@ -10425,7 +10615,7 @@ const ICONS={"select": "↖", "line": "╱", "rect": "▭", "circle": "○", "po
    read: drawing tools blue, structure teal, history violet, documents green, anything
    destructive red, constraints amber, panels grey. Chosen to sit on the dark panel
    without vibrating, and overridable per command like the glyphs themselves. */
-const ICON_HUES={"select": "#7fb3ff", "line": "#7fb3ff", "rect": "#7fb3ff", "circle": "#7fb3ff", "polygon": "#7fb3ff", "link": "#7fd8d8", "board": "#8a3b1d", "scale": "#7fd8d8", "front": "#b39ddb", "join": "#7fd8d8", "back": "#b39ddb", "forward": "#b39ddb", "backward": "#b39ddb", "offset": "#7fd8d8", "trim": "#7fd8d8", "extend": "#7fd8d8", "brk": "#7fd8d8", "arc": "#7fb3ff", "half": "#7fb3ff", "sketch": "#7fb3ff", "mid2": "#7fb3ff", "text": "#7fb3ff", "measure": "#ff9f7a", "erase": "#ff8b7a", "snap": "#ffd479", "ortho": "#ffd479", "polar": "#ffd479", "pan": "#d0d6dd", "fit": "#d0d6dd", "immersive": "#d0d6dd", "save": "#9ad0a8", "open": "#9ad0a8", "symbols": "#c7b3ff", "undo": "#c7b3ff", "redo": "#c7b3ff", "copy": "#3ecf7e", "paste": "#3ecf7e", "delete": "#e8402c", "selall": "#7fd8d8", "group": "#7fd8d8", "ungroup": "#7fd8d8", "merge": "#7fd8d8", "split": "#7fd8d8", "explode": "#7fd8d8", "label": "#7fd8d8", "typeval": "#ffd479", "finish": "#9ad0a8", "close": "#9ad0a8", "cancel": "#ff8b7a", "settings": "#8595a4", "keys": "#8595a4"};
+const ICON_HUES={"select": "#7fb3ff", "line": "#7fb3ff", "rect": "#7fb3ff", "circle": "#7fb3ff", "polygon": "#7fb3ff", "link": "#7fd8d8", "board": "#8a3b1d", "scale": "#7fd8d8", "front": "#b39ddb", "join": "#7fd8d8", "array": "#9ecf6a", "back": "#b39ddb", "forward": "#b39ddb", "backward": "#b39ddb", "offset": "#7fd8d8", "trim": "#7fd8d8", "extend": "#7fd8d8", "brk": "#7fd8d8", "arc": "#7fb3ff", "half": "#7fb3ff", "sketch": "#7fb3ff", "mid2": "#7fb3ff", "text": "#7fb3ff", "measure": "#ff9f7a", "erase": "#ff8b7a", "snap": "#ffd479", "ortho": "#ffd479", "polar": "#ffd479", "pan": "#d0d6dd", "fit": "#d0d6dd", "immersive": "#d0d6dd", "save": "#9ad0a8", "open": "#9ad0a8", "symbols": "#c7b3ff", "undo": "#c7b3ff", "redo": "#c7b3ff", "copy": "#3ecf7e", "paste": "#3ecf7e", "delete": "#e8402c", "selall": "#7fd8d8", "group": "#7fd8d8", "ungroup": "#7fd8d8", "merge": "#7fd8d8", "split": "#7fd8d8", "explode": "#7fd8d8", "label": "#7fd8d8", "typeval": "#ffd479", "finish": "#9ad0a8", "close": "#9ad0a8", "cancel": "#ff8b7a", "settings": "#8595a4", "keys": "#8595a4"};
 let ICONS_USER={},HUES_USER={};
 const hueOf=id=>HUES_USER[id]||ICON_HUES[id]||"#dbe4ec";
 const iconOf=id=>ICONS_USER[id]||ICONS[id]||(CMD[id]?CMD[id].lbl.slice(0,2):"?");
@@ -10433,7 +10623,7 @@ const DEFAULT_ORDER={
   1:["select","line","rect","circle","polygon","arc","text","measure","link","board","erase","trim","extend","brk",
      "half","sketch","mid2","symbols","pan","snap","ortho","polar"],
   2:["save","open","undo","redo","delete","copy","paste","fit",
-     "selall","group","ungroup","join","merge","front","back","forward","backward","scale","offset","split","explode","label",
+     "selall","group","ungroup","array","join","merge","front","back","forward","backward","scale","offset","split","explode","label",
      "immersive","typeval","finish","close","cancel","settings","keys"]
 };
 let barOrder=null;
@@ -11223,6 +11413,52 @@ $("undoSteps").oninput=()=>{
      for and the figure in the note is true. */
   while(past.length>1&&past.length>S.undoSteps)historyBytes-=past.shift().length;
   undoNote();draw();scheduleAutosave();
+};
+/* The array dialog. Modelled on Offset, including being listed as a blocking modal so an
+   outside tap dismisses it -- the thing three dialogs were missing until 3.21.2. */
+function closeArrayDlg(){$("arrayDlg").classList.remove("open");syncScrim();draw();}
+function arrCountNote(){
+  const c=Math.max(1,parseInt($("arrCols").value,10)||1);
+  const r=Math.max(1,parseInt($("arrRows").value,10)||1);
+  const src=S.sel.filter(o=>canModify(o)&&o.t!=="link");
+  const made=src.length*(c*r-1);
+  const nodes=countNodes(src)*(c*r-1);
+  $("arrCount").textContent=made
+    ? made.toLocaleString()+" new object"+(made===1?"":"s")+", about "+
+      nodes.toLocaleString()+" points"+(nodes>120000?" \u2014 too many; try fewer copies":"")
+    : "One across and one down makes no copies.";
+}
+function openArrayDlg(){
+  const src=S.sel.filter(o=>canModify(o)&&o.t!=="link");
+  if(!src.length){note("Select something to repeat first.");return;}
+  /* Defaults sized from the selection, so the first copy lands beside the original rather
+     than on top of it -- the fault paste had until 3.30.0. */
+  /* Combined from objBBox, because selectionBBox does not exist -- the second helper I have
+     invented today. objBBox is per object; the union is three lines. */
+  let mnx=Infinity,mny=Infinity,mxx=-Infinity,mxy=-Infinity;
+  src.forEach(o=>{const b=objBBox(o);if(!b)return;
+    mnx=Math.min(mnx,b.mnx);mny=Math.min(mny,b.mny);
+    mxx=Math.max(mxx,b.mxx);mxy=Math.max(mxy,b.mxy);});
+  const w=isFinite(mxx-mnx)?Math.max(1,mxx-mnx):10;
+  const h=isFinite(mxy-mny)?Math.max(1,mxy-mny):10;
+  $("arrCols").value=3;$("arrRows").value=1;
+  $("arrDx").value=fmt(w*1.2);$("arrDy").value=fmt(-h*1.2);
+  $("arrUx").textContent=U[S.unit].lbl;$("arrUy").textContent=U[S.unit].lbl;
+  $("arrNote").textContent="Spacing is measured from one copy to the next. A negative value goes the other way.";
+  arrCountNote();
+  dismissPopovers();$("arrayDlg").classList.add("open");syncScrim();
+}
+$("arrCols").oninput=arrCountNote;
+$("arrRows").oninput=arrCountNote;
+$("arrCancel").onclick=closeArrayDlg;
+$("arrOk").onclick=()=>{
+  const c=Math.max(1,Math.min(500,parseInt($("arrCols").value,10)||1));
+  const r=Math.max(1,Math.min(500,parseInt($("arrRows").value,10)||1));
+  const dx=(parseFloat($("arrDx").value)||0)*uf();
+  const dy=(parseFloat($("arrDy").value)||0)*uf();
+  if(c*r<2){note("One across and one down makes no copies.");return;}
+  if(!dx&&!dy){note("Give a spacing, or every copy lands on top of the original.");return;}
+  if(arraySelection(c,r,dx,dy))closeArrayDlg();
 };
 $("skAuto").onclick=()=>setSketchClose("auto");
 $("skOpen").onclick=()=>setSketchClose("open");

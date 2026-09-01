@@ -1,11 +1,11 @@
 {
-  "scriptHash": "f597e5d0ce168087",
-  "testCount": 469,
+  "scriptHash": "b69b335a31870bf2",
+  "testCount": 507,
   "counts": {
-    "commands": 51,
+    "commands": 52,
     "intents": 10,
     "storageKeys": 8,
-    "dialogs": 11
+    "dialogs": 12
   },
   "recorded": "2026-09-01"
 }

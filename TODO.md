@@ -162,3 +162,34 @@ any change.
    only get tested by using the app.
 3. **A blanket rename touching prose.** `editable` → `canSelect` rewrote four
    sentences the user reads, one of which shipped. Now guarded by a check.
+
+## Closed by measurement, 2026-09-01 — on-device figures at 39,740 and 79,480 nodes
+
+Four items I had AGREED with. The device said no to each, and none was built. Kept here
+because "we decided not to" is worth as much as "we did it", and because the argument for
+each was persuasive.
+
+| | agreed on | measured | verdict |
+|---|---|---|---|
+| R1 pointer FSM | eight interleaved state variables, and I added two | **0 clashes** across ~12,000 frames | not built |
+| R3 viewport culling | ~15 lines, obvious win when zoomed in | **0% of entities off screen** (0 of 328) | not built |
+| R7 scratch registers | 2x on a microbenchmark | 58,131 allocations at **2.50ms** per rebuild | not built |
+| undo in a worker | snapshot measured 1,193ms on my desktop | **4.40ms** on the device — 270x out | not built |
+| R6 spatial index | twice declined as premature | snapping **60% of all frame time**, 0.12% locality | **built**, 3.33.0 |
+
+The pattern: my desktop estimates were wrong in both directions and by large factors. The
+only one worth building was the one I had twice refused.
+
+Culling deserves a note. It is not wrong in principle — it is useless HERE, because this
+drawing is a handful of very large polylines rather than many small objects, so there is
+nothing to cull at the entity level. On a drawing of ten thousand small symbols it would
+pay. The measurement is of this drawing, not of the idea.
+
+## Open, and now the whole of the performance problem
+
+| | | |
+|---|---|---|
+| PAINT | static rebuild **45-52ms**, direct paint **65-72ms**, a fifth of frames over 50ms | decimation within a polyline at low zoom; instrumented in 3.37.0, awaiting a figure |
+| HIT | hit test **5.25ms** each — the only remaining path with no index | small: reuse the segment index |
+| EXPORT | never profiled until 3.37.0 | awaiting a figure |
+

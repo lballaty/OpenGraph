@@ -1,6 +1,6 @@
 # Test plan
 
-Generated from `index.html` — version **3.35.0**, build **`942671a5`**.
+Generated from `index.html` — version **3.37.0**, build **`a51feb46`**.
 Regenerate with `node testplan.js index.html > TEST-PLAN.md` after any change.
 
 Automated coverage is in `tests.js` (`node tests.js`). Everything below needs a real
@@ -12,7 +12,7 @@ cannot.
 Work down the list on the device. Anything that fails, note the build hash from the
 foot of the **?** panel and the relevant lines from **About → Copy details & log**.
 
-## Commands — 51 total
+## Commands — 52 total
 
 Each should: respond to its button, respond to its shortcut, and appear in the help
 search under its own name.
@@ -62,6 +62,7 @@ search under its own name.
 | Backward | 2 | `shift+j` | Moves the selection one step back, behind the next thing it overlaps. |  |
 | Resize | 2 | `shift+s` | Resizes the selection by a factor, or to a width or height you type. |  |
 | Explode | 2 | `j` | Breaks a shape into its separate edges. |  |
+| Array | 2 | `shift+a` | Repeats the selection at a spacing, across and down. |  |
 | Join | 2 | `shift+m` | Reconnects split or broken lines into one, where their ends meet. |  |
 | Merge | 2 | none | Locks a group so it cannot be broken apart by accident. |  |
 | Fit | 2 | `f` | Zooms so you can see everything — or just what is selected. |  |
@@ -176,6 +177,20 @@ stays open deliberately).
 | Export all to a file | button | tap it; it acts and does not throw |  |
 | Restore from a file | button | tap it; it acts and does not throw |  |
 | Close | button | tap it; it acts and does not throw |  |
+
+Also: **Escape** closes it, and a tap outside closes it (except the Ask panel, which
+stays open deliberately).
+
+### Array  · `#arrayDlg`
+
+| Control | Type | Test | ✓ |
+|---|---|---|---|
+| Repeat | button | tap it; it acts and does not throw |  |
+| Cancel | button | tap it; it acts and does not throw |  |
+| `arrCols` | number | a valid number applies; letters and a negative are refused |  |
+| `arrDx` | number | a valid number applies; letters and a negative are refused |  |
+| `arrRows` | number | a valid number applies; letters and a negative are refused |  |
+| `arrDy` | number | a valid number applies; letters and a negative are refused |  |
 
 Also: **Escape** closes it, and a tap outside closes it (except the Ask panel, which
 stays open deliberately).
