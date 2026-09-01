@@ -1039,6 +1039,12 @@
           "minimum": 0.01,
           "maximum": 0.5,
           "description": "Closure tolerance as a fraction of the stroke's path length. Used only when sketchClose is auto. Absent means 0.12."
+        },
+        "undoSteps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 150,
+          "description": "How many undo steps to keep. Each step stores the whole drawing, so fewer leaves more memory for the drawing itself. Absent means 25."
         }
       }
     },
@@ -1222,6 +1228,6 @@
       }
     }
   },
-  "version": "3.19",
-  "$comment": "Schema revision 3.19, 2026-08-30. Adds sketchClose and closeTol."
+  "version": "3.35",
+  "$comment": "Schema revision 3.35, 2026-09-01. Adds undoSteps."
 }

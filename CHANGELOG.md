@@ -4,6 +4,354 @@ The **This build** line in Settings → About is a hash of the file's own conten
 Two copies showing the same one are the same file. Use it to tell builds apart —
 the version number alone will not, since several ship on the same date.
 
+## 3.35.0 — 2026-09-01 · build `942671a5`
+
+### Undo history is capped at 25 steps, and adjustable
+A device report showed **59 steps consuming 78.8MB of an 80MB cap** — 1.33MB per step
+on a 39,740-node drawing. Paying 80MB of a roughly 200–400MB tab budget to hold 59
+undos nobody asked for is a poor trade, and it is the drawing that suffers when
+memory runs short.
+
+Settings → **Undo history**: keep 1–150 steps, default **25**. Saved with the
+drawing, range-checked on load. Lowering it returns the memory immediately rather
+than at the next action, so the figure shown stays true.
+
+The note shows the live cost, because the trade is not decidable without it:
+
+```
+18 steps held, about 1,330KB each (23.4MB).
+Fewer steps leaves more memory for the drawing.
+```
+
+It updates as you work, and costs one class check when the panel is shut.
+
+### And it says when the bytes bite first
+The **byte cap** stays as a backstop for a document where even 25 steps will not fit.
+Hitting the step limit is the setting doing what it was told and needs no comment;
+hitting the byte cap silently shortens how far back you can go, which nobody can
+know unless told. So:
+
+- **log**, once a session, with numbers: *"undo history is byte-limited: 12 of 25
+  requested steps fit in 80MB — about 6,800KB per step"*
+- **UI**, at most every two minutes: *"This drawing is large enough that only 12 undo
+  steps fit in memory, not the 25 set in Settings. Save to a file before big
+  changes."*
+
+Schema at **3.35**: `undoSteps`, optional.
+
+### Two faults the harness caught
+- The state object referenced `HISTORY_DEFAULT_STEPS` before it was declared, which
+  threw and **stopped the entire script**. The second time today that pattern has bitten;
+  a literal is used now, kept equal to the constant by a test.
+- I wrote a call to `updateUndoRedo()`, which does not exist. Hooked to `updateStatus`
+  instead.
+
+576 tests.
+
+## 3.34.0 — 2026-09-01 · build `65e165dd`
+
+Three separate faults behind "only the outline appears, it drags sometimes, and
+sometimes it jumps". All three are mine, two from yesterday.
+
+### Only the outline moved
+The overlay draws a selected group's dashed box **fresh every frame**; the members
+sat in the cached bitmap. So during a drag the box followed your finger and the
+geometry stayed put — which made a rendering bug look like a selection bug. Fixed in
+3.32.0 by `dragVersion`; this is the explanation.
+
+### The jumping
+3.31.0 floored the move step so a keyboard nudge could never be invisible. But
+`applyMove` quantised the **drag delta** to that same floored step — **109mm at
+site zoom** — so a drag advanced in jumps instead of following the finger.
+
+One constant applied to two situations that want opposite things: a keypress is
+discrete and must move something visible; a drag is continuous and must not be
+quantised. They are now separate functions.
+
+| grid | zoom | drag quantum | nudge step |
+|---|---|---|---|
+| 1mm | 3.1 | 1mm | 1mm |
+| 1mm | 0.0092 | **1mm** | 109mm |
+
+### "Sometimes but not always"
+Hit testing needs a tap within about **11 screen pixels of a line**. On a group whose
+parts are spread out, most of the dashed box is dead space — so whether a drag
+started depended on whether a line happened to be under your finger.
+
+**Selecting** still requires touching geometry. But once a group **is** selected, the
+dashed box is the affordance on screen, so the whole of it drags — padding included,
+so what drags is what you can see. Locked groups excluded.
+
+That introduces a drag with no object under it, which needed guarding in two places:
+replacing the selection with `[null]` would have cleared it, and a *tap* inside the
+box would have hit-tested, found nothing, and deselected.
+
+558 tests.
+
+## 3.33.0 — 2026-09-01 · build `91933851`
+
+### A spatial index for snapping
+Two device runs at 39,740 nodes said the same thing:
+
+```
+snapping   12,804ms of ~21,400ms total  —  60% of all frame time, 3.74ms per call
+locality   0.12% of 11,887 segments examined per snap were near the pointer
+```
+
+So 99.88% of the work was testing segments on the other side of the drawing. **I
+declined to build this twice** on the grounds that it was premature. At 38,754
+segments it is not, and the figure that settled it came from the device rather than
+from me.
+
+A uniform grid hash, cell size set from the average segment length. Measured against
+brute force at your segment count:
+
+| | per query |
+|---|---|
+| brute force | 29.6 ms |
+| index | **0.025 ms** |
+| | **1,180× faster** |
+
+Verified for correctness first, not speed: 200 random trials confirmed it never
+misses a segment brute force finds. A line spanning the whole drawing would occupy
+tens of thousands of cells, so it goes in an overflow list every query checks — and
+there is a test that such a line is still found.
+
+Used by near, midpoint, perpendicular and intersection snapping. On your figures
+snapping drops from **12.8 seconds to about 0.1** across the same 3,422 calls.
+
+**Intersection snapping is no longer capped by drawing size.** It pairs only the
+pointer's neighbourhood, so 8.07 billion pairs at 127,000 segments becomes a few
+dozen, and the cap now bounds a local crowd (400) rather than the whole file (800).
+The old message reported the wrong number anyway — "1,100 segments" on a drawing of
+19,250 — and now describes what actually matters.
+
+### Two faults of my own
+- **The pooling verdict tripped on a count, not a cost.** It said "worth measuring
+  further" at 20,343 objects on a run where the rebuild took **0.39ms**. Twenty
+  thousand allocations costing a third of a millisecond are not an argument for
+  pooling. Judged on time now.
+- **The locality measurement walked every segment**, which was right as evidence for
+  building the index and absurd once it existed — measuring would have cost more than
+  the work measured. It now reports what the index narrows to, and can say when the
+  cell size is wrong.
+
+547 tests.
+
+## 3.32.0 — 2026-09-01 · build `1327b47c`
+
+### Dragging a large group moved the handles but not the lines
+Exactly as described: the nodes followed the finger, the geometry stayed put, and it
+caught up on release. A regression I introduced in 3.15.0 and made visible in
+3.20.1.
+
+Two different questions were sharing one counter:
+
+| | asks |
+|---|---|
+| `geomVersion` | has geometry changed enough to invalidate the **segment cache**? |
+| `dragVersion` | has the **picture** changed? |
+
+`applyMove` deliberately does not bump `geomVersion` — doing so would rebuild
+**19,250 segments on every frame of a drag**. But `staticKey` used `geomVersion`
+alone, so during a drag the key held still, the cached bitmap of the *unmoved* lines
+was blitted, and only the overlay was painted fresh. Handles moved. Lines did not.
+
+Now a separate `dragVersion`, bumped by moves and by handle drags, and included in
+the key. The segment cache is still left alone, so the reason for not bumping
+`geomVersion` still holds.
+
+**Why it appeared only now, and only on a large group:** since 3.20.1 the cache
+engages only when a direct paint costs more than 6ms, and the device measured 7.2ms.
+Below that threshold the cache never runs and the bug cannot occur — so a small
+drawing never showed it. Using your own measured figures, a drag frame now costs
+about 10.9ms against 2ms before. Correct at 90fps beats wrong at 200.
+
+535 tests.
+
+## 3.31.1 — 2026-09-01 · build `40c45785`
+
+### The schema gate could pass without running
+Prompted by a fair challenge about whether the gates are really running. Four of the
+five were verified as refusing: `tests.js`, `checks.js`, `coverage.js` and the two
+execution harnesses all return a failing exit code on a deliberately broken file.
+
+The **schema gate did not**. It began:
+
+```js
+try{Ajv=require(...)}catch(e){process.exit(0);}
+```
+
+— a **silent pass** if the validator was absent, and another if the schema file was
+missing. That is the exact fault I flagged in the CI workflow an hour earlier and
+then wrote here myself: reporting success for a check that never ran.
+
+Both now refuse. And a third hole: the gate would have passed having validated
+**zero** files if the directories were unreadable, so it now requires at least twenty
+of the twenty-seven shipped files to have been checked, and prints the count.
+
+## 3.31.0 — 2026-09-01 · build `8b2dee16`
+
+### Moving a selection did nothing at low zoom
+A real log shows this **a hundred times in three seconds**, from a held arrow key,
+while the object sat still:
+
+```
+Moved 1 mm — less than a pixel at this zoom.
+```
+
+The step was in **model units**. On a site plan a 1mm step is a fraction of a pixel,
+so nudging and grid-snapping moved things by amounts nobody could see. Reported as
+"drag doesn't work for group", and it was not about groups at all.
+
+Every step is now floored to **at least one screen pixel**, raised in grid multiples
+so it still lands on a round number:
+
+| grid | zoom | before | after | on screen |
+|---|---|---|---|---|
+| 1mm | 3.1 | 1mm | 1mm | 3.1 px |
+| 1mm | 0.3 | 1mm | **4mm** | 1.2 px |
+| 1mm | 0.0092 | 1mm | **109mm** | 1.0 px |
+
+"Follow the visible grid" still controls whether the step tracks the decimated grid;
+this floor only stops it becoming invisible. And the warning is said **once**, not
+once per keypress.
+
+**Fifth model-versus-screen fault today**, after the sketch simplify tolerance, the
+closure test, the curve judgement and the paste offset. Same shape each time.
+
+### The profiler counted a direct paint as a blit
+The report read *"blits 3625 · static rebuilds 47"* on a run where the cache was
+**never in use** — 3,625 full repaints presented as 3,625 cheap copies. The opposite
+of the truth, and precisely the sort of figure I would have reasoned from. Counted
+and reported separately now.
+
+527 tests.
+
+## 3.30.0 — 2026-09-01 · build `b115a5c5`
+
+### Paste landed underneath the original
+Reported as *"copy and paste doesn't work for group"*. Driving it headlessly through
+the scripting API showed that it **does** work — two groups, correct contents, fresh
+ids, links carried when both ends came along.
+
+The offset was the problem. It was **one grid step in model units**, which on a 1mm
+grid at ordinary zoom is **3.1 pixels** — so the copy landed on top of the original
+and nothing appeared to have happened. On the 120m site plan it was a hundredth of a
+pixel.
+
+It is now a fixed distance on **screen** — about 14 pixels — snapped to the grid so
+it still lands on a round number, and never smaller than one grid step so a coarse
+grid is not violated:
+
+| grid | zoom | offset | on screen |
+|---|---|---|---|
+| 1mm | 3.1 | 5mm | 15.5 px |
+| 1mm | 0.3 | 47mm | 14.1 px |
+| 1000mm | 0.0092 | 2000mm | 18.4 px |
+
+This is the fourth thing today that was measured in model units where it should
+have been screen pixels — after the sketch simplify tolerance, the closure test and
+the curve judgement. Anything a person sees should be sized in what they see.
+
+515 tests.
+
+## 3.29.1 — 2026-09-01 · build `99950b10`
+
+### Copy details & log claimed success while the clipboard stayed empty
+A real log shows **"Details copied."** from that button — logged only by that button
+— and the clipboard was nonetheless empty, since the text had to be copied from
+**View log** instead.
+
+That is worse than a refusal. WebKit can **resolve** `writeText` and silently do
+nothing once the gesture is spent, so the promise resolving is not evidence of
+anything. I treated it as proof twice in one exchange: first concluding the
+clipboard had worked all along and retracting a correct diagnosis, then declaring
+3.29.0 a fix.
+
+Rather than try to verify the clipboard — reading it back needs a permission prompt
+— **the panel now opens every time**, whether the clipboard accepted the text or
+not:
+
+```
+Also sent to the clipboard. If the paste comes out empty,
+select the text here instead.
+```
+
+If the paste works, the panel is one tap to dismiss. If it does not, the text is
+already in front of you. And the log records the clipboard result as
+*"accepted (unverifiable)"*, which is what it actually knows.
+
+### Advice that could not work
+The same log pairs *"The browser declined"* with *"Adding the app to your Home
+Screen usually changes that"* — on **Chrome for iOS**, where a home-screen shortcut
+does not grant persistence at all. Advice that cannot work is worse than none: it
+sends someone on an errand and spends the credit of everything else the app says.
+
+It now branches: Safari gets the Home Screen advice; Chrome, Firefox and Edge on
+iOS are told plainly that it will keep declining and to keep exporting instead.
+
+501 tests.
+
+## 3.29.0 — 2026-09-01 · build `a80d3a90`
+
+### Copy details & log was failing silently on iOS
+And yes, I changed it today — twice — and one of those changes is what broke it.
+
+A clipboard write needs a **live user gesture**. WebKit treats the gesture as spent
+once a promise has been awaited, and `aboutInfo()` awaits four times: a persistence
+query, a storage listing, and two counts. So by the time `writeText` was called it
+was rejected on every attempt.
+
+The fallback panel opened, as designed — but **it looked identical to success**. A
+panel appearing with the text in it is what you would see either way, so the button
+appeared to do nothing. Three empty attachments in a row is what that looks like
+from the other end.
+
+Three paths now, in order:
+
+1. **Claim the clipboard before any await**, supplying the text as a promise resolved
+   once it is assembled. This is the only form that survives an async read on iOS.
+2. `writeText`, if the first is unsupported — simpler, and fine on a desktop.
+3. The panel, which always works and **now says so**: *"The clipboard refused. Select
+   the text in this panel and copy it by hand."*
+
+A refusal is logged, so the next report shows why the last one was hard to obtain.
+
+The text is also assembled in **one** place now. It was two copies of the same twelve
+lines, one per path — which is how they drift apart.
+
+495 tests.
+
+## 3.28.2 — 2026-09-01 · build `7cbd395d`
+
+### "The autosave was replaced by another tab" fired twice, at the wrong moment
+A real log showed it **twice in the same second**, from a listener bound once — so
+either the other tab wrote the key twice or WebKit delivered the event twice.
+Deduplicated within a two-second window, which is correct either way; guessing
+which was not necessary to fix it.
+
+The larger problem was **relevance**. It fired the instant a tab started, before
+anything had been drawn — and a tab with nothing in it has nothing to lose. So the
+warning was pure noise at exactly the moment it was most likely to be read, which is
+the same fault as the ghost tab count.
+
+Now:
+
+| situation | what happens |
+|---|---|
+| empty sheet | a log line, no interruption |
+| the same event twice | the second is dropped |
+| you have work drawn | a note saying the drawing is safe but the autosaved copy is now theirs, and to save to a file |
+
+### And the prose-leak check refused the first attempt
+Correctly. The message interpolated `S.entities.length` inline, and the check reads
+any sentence-like string for internal identifiers — which is exactly the shape that
+once put *"each is now independently canSelect"* on screen. The count is held in a
+variable now.
+
+486 tests.
+
 ## 3.28.1 — 2026-08-30 · build `3438fde8`
 
 ### Adding tests is now a gate

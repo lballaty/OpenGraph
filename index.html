@@ -631,6 +631,14 @@
       </div>
 
       <div class="sec">
+        <h3>Undo history</h3>
+        <div class="row"><label for="undoSteps">Keep</label>
+          <input type="number" id="undoSteps" class="f" step="1" min="1" max="150">
+          <span class="wtval">steps</span></div>
+        <p class="note" id="undoNote"></p>
+      </div>
+
+      <div class="sec">
         <h3>Freehand sketch</h3>
         <p class="note">When you finish a freehand stroke, the app decides whether you meant a closed loop or an open line.</p>
         <div class="segrow" style="margin-bottom:8px">
@@ -1254,6 +1262,11 @@ const S = {
   /* "auto" decides from the geometry; "open" and "close" override it. Saved with the
      drawing, so a sheet of freehand annotation keeps the behaviour it was drawn with. */
   sketchClose:"auto", closeTol:0.12,
+  /* A literal, not the constant: S is built before HISTORY_DEFAULT_STEPS is declared, and
+     referencing it here threw "Cannot access before initialization" and stopped the entire
+     script. Caught by the execution harness on the first run; a source check could not see
+     it. The two are kept equal by a test. */
+  undoSteps:25,
   ortho:false, polar:false, pinc:15,
   showDelta:false, showGrid:true, showArea:false, gridInSvg:true, scrollPan:MACISH, segMode:false,
   sel:[]
@@ -1311,8 +1324,32 @@ function restore(s){segsDirty();const o=JSON.parse(s);S.entities=o.e;S.measures=
 
    Capped by BYTES rather than by step count. 150 steps of an 18MB document is 2.7GB; 150
    steps of an ordinary drawing is a few megabytes. A step count cannot tell those apart. */
+/* Two limits, both adjustable, and the STEP count is the one people actually reason about.
+   A real device report showed 59 steps consuming 78.8MB of an 80MB cap: 1.33MB per step on
+   a 39,740-node drawing. Paying 80MB of a roughly 200-400MB tab budget to hold 59 undos
+   nobody asked for is a poor trade, and it is the drawing itself that suffers when memory
+   runs short.
+
+   So the default is 25 steps, which is more than anyone reaches in practice, with the byte
+   cap kept as a backstop for a document large enough that even 25 is too many. */
+const HISTORY_DEFAULT_STEPS=25;
 const HISTORY_MAX_BYTES=80*1024*1024;
 let historyBytes=0;
+let histWarnAt=0, histWarnedSession=false;
+/* Said in the UI at most every two minutes, and in the log once a session with the numbers.
+   A message on every action would be the noise this app has produced twice already. */
+function historyPressure(stepCap){
+  if(!histWarnedSession){
+    histWarnedSession=true;
+    logLine("undo history is byte-limited: "+past.length+" of "+stepCap+" requested steps fit "+
+      "in "+(HISTORY_MAX_BYTES/1048576).toFixed(0)+"MB \u2014 about "+
+      Math.round(historyBytes/Math.max(1,past.length)/1024)+"KB per step","warn");
+  }
+  if(Date.now()-histWarnAt<120000)return;
+  histWarnAt=Date.now();
+  note("This drawing is large enough that only "+past.length+" undo steps fit in memory, "+
+    "not the "+stepCap+" set in Settings. Save to a file before big changes.");
+}
 function push(){
   segsDirty();          // a mutation is beginning
   const pT=profStart("undo snapshot");
@@ -1322,8 +1359,17 @@ function push(){
   past.push(snap);
   historyBytes+=snap.length;
   // Oldest first, until it fits. Always keep at least one step, or undo stops working.
-  while(past.length>1&&(historyBytes>HISTORY_MAX_BYTES||past.length>150))
+  const stepCap=S.undoSteps>0?S.undoSteps:HISTORY_DEFAULT_STEPS;
+  let droppedForBytes=false;
+  while(past.length>1&&(historyBytes>HISTORY_MAX_BYTES||past.length>stepCap)){
+    if(historyBytes>HISTORY_MAX_BYTES)droppedForBytes=true;
     historyBytes-=past.shift().length;
+  }
+  /* Dropping a step because the STEP limit was reached is the setting working as asked, and
+     needs no comment. Dropping one because the BYTE cap was hit means the document is large
+     enough that the chosen number of undos will not fit -- which the person cannot know
+     unless told, and matters because it silently shortens how far back they can go. */
+  if(droppedForBytes)historyPressure(stepCap);
   future.forEach(f=>historyBytes-=f.length);
   future.length=0;
   scheduleAutosave();
@@ -1350,10 +1396,28 @@ const gxmm=()=>S.gx*uf(), gymm=()=>S.gy*uf();
    user has asked snapping to follow the drawn grid, in which case it decimates with
    it. Falls back to the true interval if gridStep declines (absurd zoom-out), so
    snapping never silently stops working. */
-const snapStepX=()=>S.snapFollowsZoom?(gridStep(gxmm(),S.view.zoom)||gxmm()):gxmm();
-const snapStepY=()=>S.snapFollowsZoom?(gridStep(gymm(),S.view.zoom)||gymm()):gymm();
-const nudgeStepX=()=>S.nudgeStep>0?S.nudgeStep*uf():snapStepX();
-const nudgeStepY=()=>S.nudgeStep>0?S.nudgeStep*uf():snapStepY();
+/* Never smaller than one screen pixel, whatever the setting. A 1mm step on a site plan is
+   a fraction of a pixel, so snapping and nudging moved things by amounts nobody could see --
+   a real log shows "Moved 1 mm, less than a pixel at this zoom" a hundred times in three
+   seconds while the object sat still. The setting still controls whether the step follows
+   the DECIMATED grid; this floor only stops it becoming invisible.
+
+   Raised in grid multiples, so the result is always a round number on the sheet. */
+function stepFloor(base){
+  if(!(base>0))return base;
+  if(base*S.view.zoom>=MIN_STEP_PX)return base;
+  const mult=Math.ceil(MIN_STEP_PX/(base*S.view.zoom));
+  return base*mult;
+}
+/* Two questions, two functions -- kept apart deliberately after conflating them once:
+     gridSnapStepX  the actual grid a dragged object should land on
+     snapStepX      that step, floored so a discrete keypress is never invisible */
+const gridSnapStepX=()=>S.snapFollowsZoom?(gridStep(gxmm(),S.view.zoom)||gxmm()):gxmm();
+const snapStepX=()=>stepFloor(gridSnapStepX());
+const gridSnapStepY=()=>S.snapFollowsZoom?(gridStep(gymm(),S.view.zoom)||gymm()):gymm();
+const snapStepY=()=>stepFloor(gridSnapStepY());
+const nudgeStepX=()=>stepFloor(S.nudgeStep>0?S.nudgeStep*uf():snapStepX());
+const nudgeStepY=()=>stepFloor(S.nudgeStep>0?S.nudgeStep*uf():snapStepY());
 function fmt(mm,dec){const u=U[S.unit],v=mm/u.f,d=dec===undefined?u.dec:dec;
   return v.toFixed(d).replace(/\.?0+$/,m=>m.includes(".")?"":m);}
 const fmtU=mm=>fmt(mm)+" "+U[S.unit].lbl;
@@ -2970,7 +3034,10 @@ function snapPointInner(sp,ignore){
   }
   if(S.snaps.center) for(const{o,root}of flattenAll(S.entities))
     if(visible(root)&&(o.t==="circle"||o.t==="arc")&&!(ignore&&ignore.includes(root))) add(o.c,1,"center","centre");
-  if(S.snaps.mid) for(const s of segs) add({x:(s.a.x+s.b.x)/2,y:(s.a.y+s.b.y)/2},2,"mid","midpoint");
+  /* A midpoint can only be within tol of the pointer if the segment is, so the same
+     narrowing applies -- with the tolerance widened by half the cell to be safe. */
+  if(S.snaps.mid) for(const s of segsNear(raw,tol*2,false))
+    add({x:(s.a.x+s.b.x)/2,y:(s.a.y+s.b.y)/2},2,"mid","midpoint");
   /* Intersection snapping is every segment against every other: n(n-1)/2 pairs, on every
      pointer move. At 127,000 segments that is 8.07 BILLION pairs, measured at 186 seconds
      per move -- the app would not be slow, it would never return. And it is one checkbox
@@ -2980,36 +3047,42 @@ function snapPointInner(sp,ignore){
      once; every other snap keeps working. A spatial index would let it run at any size and
      is the proper answer, but a guard is what stops a checkbox hanging the app today. */
   if(S.snaps.inter){
-    if(segs.length<=INTER_SNAP_MAX){
-      for(let i=0;i<segs.length;i++)for(let j=i+1;j<segs.length;j++){
-        const p=segInt(segs[i].a,segs[i].b,segs[j].a,segs[j].b); if(p)add(p,3,"inter","intersection");}
+    /* Only crossings near the pointer can be snapped to, so the pairing runs over the
+       narrowed set rather than the whole drawing. That turns 8.07 billion pairs at 127,000
+       segments into a few dozen -- and the cap can rise from 800 to a size that no longer
+       stands the feature down on any realistic drawing. */
+    const near=segsNear(raw,tol*3,false);
+    if(near.length<=INTER_SNAP_MAX){
+      for(let i=0;i<near.length;i++)for(let j=i+1;j<near.length;j++){
+        const p=segInt(near[i].a,near[i].b,near[j].a,near[j].b); if(p)add(p,3,"inter","intersection");}
     }else if(!interSnapWarned){
       interSnapWarned=true;
-      const pairs=Math.round(segs.length*(segs.length-1)/2/1e6);
-      logLine("intersection snapping stood down: "+segs.length.toLocaleString()+
-        " segments would need about "+pairs+" million comparisons per pointer move","warn");
-      note("Intersection snapping is off for this drawing \u2014 it is too large ("+
-        segs.length.toLocaleString()+" segments). Every other kind of snapping still works.");
+      /* The NEAR count, not the whole drawing: the message said "1,100 segments" on a
+         drawing of 19,250 because it was reporting the wrong number even before the index.
+         What matters is how many are crowded around the pointer. */
+      const cnt=near.length;
+      logLine("intersection snapping stood down: "+cnt+" segments crowded near the pointer","warn");
+      note("Intersection snapping is off here \u2014 too many lines are crowded together at this "+
+        "spot. Zoom in, and every other kind of snapping still works.");
     }
   }
-  if(S.snaps.perp&&anchor) for(const s of segs){
+  /* Near RAW, not near the anchor: the candidate is the foot of the perpendicular, and it
+     is only a useful snap if that foot is close to the pointer. Narrowing around the anchor
+     would return the wrong set entirely -- my first attempt did exactly that. */
+  if(S.snaps.perp&&anchor) for(const s of segsNear(raw,tol*2,false)){
     const vx=s.b.x-s.a.x,vy=s.b.y-s.a.y,L=vx*vx+vy*vy;if(!L)continue;
     const t=((anchor.x-s.a.x)*vx+(anchor.y-s.a.y)*vy)/L;if(t<0||t>1)continue;
     add({x:s.a.x+vx*t,y:s.a.y+vy*t},4,"perp","perpendicular");}
   if(S.snaps.near){
-    /* Locality, measured. A spatial index only pays if the great majority of segments
-       examined are nowhere near the pointer -- if most of them ARE near, an index would
-       return almost everything and save nothing. Counting both numbers answers it. */
-    if(PROF.on){
-      MEAS.snapCalls++;
-      MEAS.segsExamined+=segs.length;
-      for(const s of segs){
-        const bx0=Math.min(s.a.x,s.b.x)-tol, bx1=Math.max(s.a.x,s.b.x)+tol;
-        const by0=Math.min(s.a.y,s.b.y)-tol, by1=Math.max(s.a.y,s.b.y)+tol;
-        if(raw.x>=bx0&&raw.x<=bx1&&raw.y>=by0&&raw.y<=by1)MEAS.segsNear++;
-      }
-    }
-    for(const s of segs) add(projOnSeg(raw,s.a,s.b).p,5,"near","on line");
+    /* Only the segments near the pointer. Measured at 0.12% of the list on the device, so
+       this removes about 99.9% of the work that dominated every frame. */
+    const local=segsNear(raw,tol,false);
+    /* The measurement now records what the INDEX achieved, not the locality it was built
+       to exploit. The old version walked every segment to count how many were near --
+       which was fine as evidence for building the index and absurd afterwards, since
+       measuring would have cost more than the work it measured. */
+    if(PROF.on){MEAS.snapCalls++;MEAS.segsExamined+=segs.length;MEAS.segsNear+=local.length;}
+    for(const s of local) add(projOnSeg(raw,s.a,s.b).p,5,"near","on line");
     for(const{o,root}of flattenAll(S.entities)){
       if(!visible(root)||(ignore&&ignore.includes(root)))continue;
       if(o.t!=="circle"&&o.t!=="arc")continue;
@@ -3290,6 +3363,91 @@ window.draftingGrid={
   get build(){return APP_HASH;}
 };
 
+/* ---------- spatial index ----------
+   Built on measurement, not argument. Two device runs said the same thing:
+
+     snapping  12,804ms of ~21,400ms total — 60% of all frame time, 3.74ms per call
+     locality  0.12% of 11,887 segments examined per snap were anywhere near the pointer
+
+   So 99.88% of the work was testing segments on the other side of the drawing. I twice
+   declined to build this on the grounds that it was premature; at 38,754 segments it is
+   not, and the figure that settled it came from the device rather than from me.
+
+   A uniform grid hash rather than a tree: the query is always "what is within a few
+   pixels of this point", cells are O(1) to find, and there is no rebalancing to get wrong.
+   Cell size is set from the average segment length so a segment spans about one cell --
+   too small and long segments register in hundreds of cells, too large and a query returns
+   everything, which is the case being escaped. */
+let segIndex=null, segIndexVer=-1, segIndexAll=false;
+function buildSegIndex(segs){
+  if(!segs.length)return{cell:1,map:new Map(),segs};
+  /* Average segment length decides the cell. Sampled rather than summed: at 38,754
+     segments the sample is as good and costs nothing. */
+  let total=0, n=0;
+  const stride=Math.max(1,Math.floor(segs.length/500));
+  for(let i=0;i<segs.length;i+=stride){
+    total+=dist(segs[i].a,segs[i].b); n++;
+  }
+  const cell=Math.max(1e-6,(total/Math.max(1,n))*1.5);
+  const map=new Map();
+  for(let i=0;i<segs.length;i++){
+    const g=segs[i];
+    const x0=Math.floor(Math.min(g.a.x,g.b.x)/cell), x1=Math.floor(Math.max(g.a.x,g.b.x)/cell);
+    const y0=Math.floor(Math.min(g.a.y,g.b.y)/cell), y1=Math.floor(Math.max(g.a.y,g.b.y)/cell);
+    /* A segment crossing many cells is registered in all of them. Guarded: a single very
+       long line across a large drawing could otherwise touch tens of thousands of cells,
+       and paying that on every rebuild is the cost this is meant to remove. */
+    const span=(x1-x0+1)*(y1-y0+1);
+    if(span>256){
+      // Too coarse to place usefully. Kept in a list every query checks.
+      (map.get("*")||map.set("*",[]).get("*")).push(i);
+      continue;
+    }
+    for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
+      const k=x+","+y;
+      let list=map.get(k);
+      if(!list){list=[];map.set(k,list);}
+      list.push(i);
+    }
+  }
+  return{cell,map,segs};
+}
+function segIndexFor(all){
+  const segs=segments(all);
+  if(!segIndex||segIndexVer!==geomVersion||segIndexAll!==!!all){
+    const t0=profStart("index rebuild");
+    segIndex=buildSegIndex(segs);
+    segIndexVer=geomVersion;segIndexAll=!!all;
+    profEnd("index rebuild",t0);
+  }
+  return segIndex;
+}
+/* Segments whose bounding box comes within tol of p. Returns the actual segment objects,
+   so callers need no other change than swapping their loop source. */
+function segsNear(p,tol,all){
+  const ix=segIndexFor(all);
+  const{cell,map,segs}=ix;
+  const out=[];
+  const seen=new Set();
+  const x0=Math.floor((p.x-tol)/cell), x1=Math.floor((p.x+tol)/cell);
+  const y0=Math.floor((p.y-tol)/cell), y1=Math.floor((p.y+tol)/cell);
+  /* A pathological tolerance would sweep the whole grid, which would be slower than the
+     loop it replaces. Fall back rather than crawl. */
+  if((x1-x0+1)*(y1-y0+1)>4096)return segs;
+  for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
+    const list=map.get(x+","+y);
+    if(!list)continue;
+    for(let i=0;i<list.length;i++){
+      const id=list[i];
+      if(seen.has(id))continue;
+      seen.add(id);out.push(segs[id]);
+    }
+  }
+  const over=map.get("*");
+  if(over)for(let i=0;i<over.length;i++)if(!seen.has(over[i])){seen.add(over[i]);out.push(segs[over[i]]);}
+  return out;
+}
+
 /* ---------- profiler ----------
    Built because every performance figure so far came from my own machine, and the device
    that matters cannot be measured from here. This attributes cost to named phases on the
@@ -3304,7 +3462,7 @@ window.draftingGrid={
    names the key term that changed rather than leaving it to be guessed. */
 const PROF={
   on:false,
-  frames:0, blits:0, rebuilds:0, slow:0,
+  frames:0, blits:0, directPaints:0, rebuilds:0, slow:0,
   frameMs:0, worstMs:0,
   phase:{},              // name -> accumulated ms
   count:{},              // name -> calls
@@ -3426,8 +3584,9 @@ function profReport(reason){
      right strategy differs by hardware. A cache threshold that suits a tablet may be wrong
      on a phone, and a limit measured on one device should not silently govern another. */
   L.push(describeDevice());
-  L.push("frames "+PROF.frames+"  \u00b7  blits "+PROF.blits+"  \u00b7  static rebuilds "+
-    PROF.rebuilds+"  \u00b7  slow frames "+PROF.slow);
+  L.push("frames "+PROF.frames+"  \u00b7  direct paints "+PROF.directPaints+
+    "  \u00b7  blits "+PROF.blits+"  \u00b7  static rebuilds "+PROF.rebuilds+
+    "  \u00b7  slow frames "+PROF.slow);
   /* Whether the cache is being used at all, and why. It is skipped for a light drawing and
      during any drag, because in both cases a direct paint is cheaper than a full-surface
      copy -- so seeing "not in use" on a light sheet is correct, not a fault. */
@@ -3458,6 +3617,9 @@ function profReport(reason){
   L.push("   nodes drawn          "+nodesTotal().toLocaleString()+
     " visible, "+nodeHidden.toLocaleString()+" hidden");
   L.push("   segment list         "+(segCache?segCache.length.toLocaleString():"not built"));
+  L.push("   spatial index        "+(segIndex
+    ?segIndex.map.size.toLocaleString()+" cells, cell "+fmtBig(segIndex.cell)
+    :"not built"));
   try{
     const m=performance&&performance.memory;
     L.push("   JS heap              "+(m&&m.usedJSHeapSize
@@ -3481,17 +3643,25 @@ function profReport(reason){
       "  ("+MEAS.culled+" of "+tot+")"+
       (tot&&MEAS.culled/tot>0.5?"  \u2192 culling would pay"
         :"  \u2192 culling would save little at this zoom"));
+    /* Judged on COST, not count. This tripped at 20,000 objects and said "worth measuring
+       further" on a run where the rebuild took 0.39ms -- twenty thousand allocations that
+       cost a third of a millisecond are not an argument for pooling. A threshold on the
+       wrong quantity is the same fault as measuring a tolerance in millimetres and
+       expecting it to look right on screen. */
     const perFrame=MEAS.allocFrames?Math.round(MEAS.allocs/MEAS.allocFrames):0;
-    L.push("   objects built per rebuild "+perFrame.toLocaleString()+
-      (perFrame>20000?"  \u2192 object pooling worth measuring further"
-        :"  \u2192 too few for pooling to matter"));
+    const rebuildMs=PROF.count["segments rebuild"]
+      ?PROF.phase["segments rebuild"]/PROF.count["segments rebuild"]:0;
+    L.push("   objects built per rebuild "+perFrame.toLocaleString()+" at "+
+      rebuildMs.toFixed(2)+"ms each"+
+      (rebuildMs>4?"  \u2192 allocation is costing real time; pooling worth measuring"
+        :"  \u2192 cheap enough that pooling would buy nothing"));
     if(MEAS.snapCalls){
       const pct=MEAS.segsExamined?(MEAS.segsNear/MEAS.segsExamined*100):0;
-      L.push("   segments near the pointer "+pct.toFixed(2)+"% of "+
-        Math.round(MEAS.segsExamined/MEAS.snapCalls).toLocaleString()+" examined per snap"+
-        (pct<5&&MEAS.segsExamined/MEAS.snapCalls>2000
-          ?"  \u2192 a spatial index would pay"
-          :"  \u2192 an index would return most of them anyway"));
+      L.push("   index narrowing         "+Math.round(MEAS.segsNear/MEAS.snapCalls)+
+        " of "+Math.round(MEAS.segsExamined/MEAS.snapCalls).toLocaleString()+
+        " segments tested per snap ("+pct.toFixed(2)+"%)"+
+        (pct<5?"  \u2192 the index is doing its job"
+          :"  \u2192 the index is returning most of the drawing; check the cell size"));
     }else L.push("   snap locality           not measured (near-snapping off)");
   }
   L.forEach(x=>logLine(x,"error"));   // "error" so it survives at any log level
@@ -3507,7 +3677,7 @@ function profReset(){
   MEAS.stateClashes=0;MEAS.clashKinds={};
   MEAS.culled=MEAS.drawn=MEAS.allocs=MEAS.allocFrames=0;
   MEAS.segsExamined=MEAS.segsNear=MEAS.snapCalls=0;
-  PROF.frames=PROF.blits=PROF.rebuilds=PROF.slow=0;
+  PROF.frames=PROF.blits=PROF.directPaints=PROF.rebuilds=PROF.slow=0;
   PROF.frameMs=PROF.worstMs=0;
   PROF.phase={};PROF.count={};PROF.keyChanges={};
 }
@@ -3584,7 +3754,7 @@ function staticKey(){
      changes far less often than a frame. */
   let selKey="";
   for(const o of S.sel)selKey+=(o.id!=null?o.id:S.entities.indexOf(o))+",";
-  return geomVersion+"|"+S.view.cx+"|"+S.view.cy+"|"+S.view.zoom+"|"+W+"x"+H+"|"+
+  return geomVersion+"."+dragVersion+"|"+S.view.cx+"|"+S.view.cy+"|"+S.view.zoom+"|"+W+"x"+H+"|"+
     (S.showGrid?1:0)+(S.hideLabels?1:0)+(S.hideMeasures?1:0)+(S.showArea?1:0)+"|"+
     (S.sheet&&S.sheet.on?1:0)+"|"+S.unit+"|"+S.gx+"x"+S.gy+"/"+S.major+"|"+
     selKey+"|"+
@@ -3636,7 +3806,11 @@ function draw(){
     updateStatus();
     statKey="";     // whatever is in the offscreen canvas is now stale
     const ms1=pnow()-fT;
-    PROF.frames++;PROF.frameMs+=ms1;PROF.blits++;
+    /* directPaints, not blits. Counting a direct paint as a blit made the report read
+       "blits 3625 · static rebuilds 47" on a run where the cache was never in use at all --
+       3,625 full repaints reported as 3,625 cheap copies, which is the opposite of the
+       truth and exactly the kind of figure I would have reasoned from. */
+    PROF.frames++;PROF.frameMs+=ms1;PROF.directPaints++;
     if(ms1>PROF.worstMs)PROF.worstMs=ms1;
     if(ms1>50)PROF.slow++;
     return;
@@ -3731,8 +3905,16 @@ const SKETCH_STEP_PX=1/Math.min(window.devicePixelRatio||1,2.5);
    still fits inside a frame at 60fps with room for the drawing itself. 2,000 was the first
    figure I chose and measured at 46ms, which is three frames: usable-looking in isolation
    and not something to build a limit around. */
-const INTER_SNAP_MAX=800;
+/* 400 segments in the immediate neighbourhood of the pointer is about 80,000 pairs, which
+   measures well under a frame. Before the index this had to bound the WHOLE drawing at 800;
+   now it bounds only what is crowded around the pointer, so no realistic drawing stands the
+   feature down. */
+const INTER_SNAP_MAX=400;
 let interSnapWarned=false;
+/* Far enough to be plainly a separate object, near enough to be obviously related. */
+const PASTE_OFFSET_PX=14;
+/* One pixel: below this a move is invisible, whatever the drawing scale. */
+const MIN_STEP_PX=1;
 const GRID_MIN_PX=4;   // the app's existing legibility threshold -- decimation is the only change
 function gridStep(base,zoom){
   if(!(base>0)||!isFinite(base)||!(zoom>0)||!isFinite(zoom))return null;
@@ -4237,6 +4419,13 @@ function drawScaleBar(){
   g.fillText(fmtBig(n*p*uf()),x+len/2,y-8);g.restore();
 }
 function updateStatus(){
+  /* The history figure in Settings is live: it changes with every action, and a stale one
+     would have someone choosing a step count from a number true ten minutes ago. Guarded on
+     the panel being open, so a closed panel costs one class check.
+
+     Hooked here rather than to an undo-specific updater because there isn't one -- I first
+     wrote a call to updateUndoRedo(), which does not exist. */
+  if(panelOpenForNote())undoNote();
   const at=cursor||lastPt;
   /* Scaled too: a cursor reading 118000 on a 120m site is as hard to read as an area of
      nine and a half billion. */
@@ -5047,7 +5236,20 @@ function copySelected(){
 function pasteClipboard(){
   if(!clipboard||!clipboard.length)return;
   pasteCount++;
-  const dx=snapStepX()*pasteCount,dy=-snapStepY()*pasteCount;
+  /* The offset was one grid step in MODEL units, which is invisible at most zooms: on a 1mm
+     grid at ordinary zoom that is three pixels, so the copy landed underneath the original
+     and nothing appeared to have happened. On the 120m site plan it was a hundredth of a
+     pixel.
+
+     It is now a fixed distance on SCREEN -- about 14 pixels, so a copy is plainly beside
+     its original whatever the drawing scale -- and then snapped to the grid so it still
+     lands on a round number. The grid step is used as the minimum, so a coarse grid is
+     never violated. */
+  const wantMM=PASTE_OFFSET_PX/S.view.zoom;
+  const stepX=snapStepX()||1, stepY=snapStepY()||1;
+  const offX=Math.max(stepX,Math.round(wantMM/stepX)*stepX);
+  const offY=Math.max(stepY,Math.round(wantMM/stepY)*stepY);
+  const dx=offX*pasteCount, dy=-offY*pasteCount;
   push();
   /* Ids must be reissued, not reused. A pasted copy carrying the original's id would
      mean two objects answering to the same name, and byId returns the first it finds --
@@ -5102,6 +5304,18 @@ function stickyMeasures(objs,pts){
   }
   return out;
 }
+/* True when the point falls inside the outline of a selected group -- the box that is
+   actually drawn, padding included, so what drags matches what is shown. */
+function insideSelectedGroup(p){
+  for(const o of S.sel){
+    if(!o||o.t!=="group"||!canModify(o))continue;
+    const b=objBBox(o);
+    if(!b)continue;
+    const pad=6/S.view.zoom;                    // the outline is drawn 6px outside the box
+    if(p.x>=b.mnx-pad&&p.x<=b.mxx+pad&&p.y>=b.mny-pad&&p.y<=b.mxy+pad)return true;
+  }
+  return false;
+}
 function startMove(grab){
   // canModify, not canSelect: a locked object stays canSelect but must not move.
   const objs=S.sel.filter(canModify);
@@ -5152,15 +5366,41 @@ function tidyVia(o){
   if(keep.length!==o.via.length)o.via=keep;
   if(!o.via.length)delete o.via;
 }
+/* Bumped whenever a drag moves geometry. This is deliberately SEPARATE from geomVersion:
+   the two answer different questions.
+
+     geomVersion  -- has the geometry changed in a way that invalidates the SEGMENT cache?
+                     Bumping it during a drag would rebuild 19,250 segments every frame.
+     dragVersion  -- has the PICTURE changed? Which it has, on every frame of a drag.
+
+   Conflating them was the bug: staticKey used geomVersion alone, so during a drag the key
+   held still, the cached bitmap of the unmoved lines was blitted, and only the overlay --
+   the handles -- was drawn fresh. Handles moved, lines did not, until release bumped
+   geomVersion and it caught up.
+
+   It only showed on a drawing heavy enough for the cache to engage at all, which is why it
+   appeared on a large group and not before: the threshold is 6ms and the device measured
+   7.2ms. */
+let dragVersion=0;
 function applyMove(cur){
+  dragVersion++;
   let dx=cur.x-drag.grab.x, dy=cur.y-drag.grab.y;
   if(S.snapOn&&!altDown&&S.snaps.grid){
-    dx=Math.round(dx/snapStepX())*snapStepX();dy=Math.round(dy/snapStepY())*snapStepY();
+    /* The RAW grid step, not the floored one. The floor added in 3.31.0 exists so a
+       keyboard nudge is never invisible -- a discrete press must move something you can
+       see. A drag is continuous and follows a finger, and quantising it to that floor made
+       it advance in 109mm jumps at site zoom: the same constant applied to two situations
+       that want opposite things, which is the fault I keep repeating.
+
+       So: nudge is floored, drag is not. */
+    const sx=gridSnapStepX(), sy=gridSnapStepY();
+    dx=Math.round(dx/sx)*sx; dy=Math.round(dy/sy)*sy;
   }
   drag.objs.forEach((o,i)=>applyDelta(o,drag.orig[i],dx,dy));
   drag.stick.forEach((st,i)=>{st.m[st.w]={x:drag.stickOrig[i].x+dx,y:drag.stickOrig[i].y+dy};});
 }
 function applyHandle(p){
+  dragVersion++;   // resizing, rotating and vertex edits move the picture too
   const{o,k,i}=drag.h, s=drag.orig[0];
   if(k==="v"){o.p[i]={x:p.x,y:p.y};}
   else if(k==="rc"){
@@ -5241,6 +5481,7 @@ function applyHandle(p){
    happens, which reads as a dead key rather than as a very small step. Say so instead,
    and point at the setting that would fix it (only when it isn't already on). */
 const NUDGE_MIN_PX=1.5;
+let nudgeWarnAt=0;
 function nudge(dx,dy){
   if(!S.sel.length)return;
   // Arrow keys bypass runOnSelection entirely, so the lock has to be honoured here too.
@@ -5253,9 +5494,13 @@ function nudge(dx,dy){
   t.forEach(o=>translateObj(o,dx,dy));
   draw();
   const px=Math.max(Math.abs(dx),Math.abs(dy))*S.view.zoom;
-  if(px<NUDGE_MIN_PX){
-    note("Moved "+fmtBig(Math.max(Math.abs(dx),Math.abs(dy)))+" \u2014 less than a pixel at this zoom."+
-      (S.snapFollowsZoom?" Zoom in to see it.":" Zoom in, or switch on \u201cFollow the visible grid\u201d in Settings."));
+  /* Said once, not once per keypress. A held arrow key repeated this a hundred times in
+     three seconds in a real log, which buried everything else and told the reader nothing
+     the first line had not. */
+  if(px<NUDGE_MIN_PX&&Date.now()-nudgeWarnAt>3000){
+    nudgeWarnAt=Date.now();
+    note("Moved "+fmtBig(Math.max(Math.abs(dx),Math.abs(dy)))+" \u2014 too little to see at this zoom. "+
+      "Zoom in, or set a larger nudge step in Settings.");
   }
 }
 
@@ -5565,6 +5810,16 @@ cv.addEventListener("pointerdown",e=>{
       if(selectFresh){selectFresh=false;S.sel=[];}
       const o=hitAt(toM(sp));
       if(o)pick={o,grab:cursor};      // tap adds to selection, drag moves
+      else if(insideSelectedGroup(toM(sp))){
+        /* Inside an already-selected group's outline. Hit testing needs a tap within about
+           11 pixels of a LINE, so on a group whose parts are spread out most of the dashed
+           box was dead space -- a drag started sometimes and not others, depending on
+           whether a line happened to be under the finger.
+
+           Selecting still requires touching geometry. But once a group IS selected, the
+           dashed box is the affordance on screen, so the whole of it drags. */
+        pick={o:null,grab:cursor};
+      }
       else{bandStart=sp;band=null;}
     }
   }
@@ -5596,7 +5851,10 @@ cv.addEventListener("pointermove",e=>{
   if(downPt)moved=Math.max(moved,Math.hypot(sp.x-downPt.x,sp.y-downPt.y));
   if(bandStart&&moved>8){band={a:bandStart,b:sp};requestDraw();return;}
   if(pick&&moved>4){
-    if(!S.sel.includes(pick.o))S.sel=[pick.o];
+    /* pick.o is null when the press landed inside a selected group's outline rather than on
+       geometry. In that case the selection is already what should move, so it is left
+       alone -- replacing it with [null] would clear it and the drag would do nothing. */
+    if(pick.o&&!S.sel.includes(pick.o))S.sel=[pick.o];
     startMove(pick.grab);pick=null;
   }
   if(drag){
@@ -5635,7 +5893,14 @@ function endPtr(e){
   panning=false;panLast=null;
   if(band){selectInBand();band=null;bandStart=null;downPt=null;draw();return;}
   bandStart=null;
-  if(pick){pick=null;toggleAt(toM(sp));downPt=null;draw();return;}
+  if(pick){
+    const wasO=pick.o;pick=null;downPt=null;
+    /* A TAP inside a selected group's outline, on no geometry: keep the selection. Passing
+       it to toggleAt would hit-test, find nothing, and clear it -- so tapping inside the
+       box you are about to drag would lose it. */
+    if(wasO)toggleAt(toM(sp));
+    draw();return;
+  }
   if(drag){
     if(!drag.dirty)past.pop();
     drag=null;downPt=null;draw();return;
@@ -5922,7 +6187,7 @@ function applyNum(){
 function doc(){return{app:"drafting-grid",v:2,uid:ensureUid(),unit:S.unit,gx:S.gx,gy:S.gy,uniform:S.uniform,major:S.major,
   view:{...S.view},layers:S.layers,cur:S.cur,nextLayer:S.nextLayer,nextId:S.nextId,snaps:{...S.snaps},snapOn:S.snapOn,
   ortho:S.ortho,polar:S.polar,pinc:S.pinc,tool:S.tool,rotIndividually:rotateIndividually,showDelta:S.showDelta,showGrid:S.showGrid,showArea:S.showArea,
-  gridInSvg:S.gridInSvg,scrollPan:S.scrollPan,segMode:S.segMode,library:libName,autosave:S.autosave,sheet:{...S.sheet},title:{...S.title},snapFollowsZoom:S.snapFollowsZoom,sketchClose:S.sketchClose,closeTol:S.closeTol,nudgeStep:S.nudgeStep,polySides:S.polySides,textSize:S.textSize,
+  gridInSvg:S.gridInSvg,scrollPan:S.scrollPan,segMode:S.segMode,library:libName,autosave:S.autosave,sheet:{...S.sheet},title:{...S.title},snapFollowsZoom:S.snapFollowsZoom,sketchClose:S.sketchClose,closeTol:S.closeTol,undoSteps:S.undoSteps,nudgeStep:S.nudgeStep,polySides:S.polySides,textSize:S.textSize,
   entities:S.entities,measures:S.measures};}
 /* Every check runs BEFORE push() and before the first assignment, so a rejected
    document leaves the current sheet untouched. Previously only the `app` tag was
@@ -5954,6 +6219,8 @@ function loadDoc(d){
   S.snapFollowsZoom=!!d.snapFollowsZoom;
   /* Defaults preserve the previous behaviour for any drawing saved before the setting
      existed, so opening an old file does not silently change how sketching works. */
+  S.undoSteps=(typeof d.undoSteps==="number"&&d.undoSteps>0&&d.undoSteps<=150)
+    ?Math.round(d.undoSteps):HISTORY_DEFAULT_STEPS;
   S.sketchClose=(d.sketchClose==="open"||d.sketchClose==="close")?d.sketchClose:"auto";
   S.closeTol=(typeof d.closeTol==="number"&&d.closeTol>0&&d.closeTol<=0.5)?d.closeTol:CLOSE_TOL_FRAC;
   // An opened drawing brings its own identity; one without gets a fresh one on save.
@@ -6732,8 +6999,8 @@ const LIB_PREFIX="dg:lib:";   // one key per named library, so sets stay separab
    you have to remember -- and several builds shipped on the same date anyway, so neither
    answered "which copy am I looking at". A content hash cannot drift: two files showing
    the same one ARE the same file. */
-const APP_NAME="Drafting Grid", APP_VERSION="3.28.1", APP_BUILD="2026-08-29";
-const APP_HASH="3438fde8";
+const APP_NAME="Drafting Grid", APP_VERSION="3.35.0", APP_BUILD="2026-08-29";
+const APP_HASH="942671a5";
 const AUTO_KEY="dg:auto";
 const APP_DOC="drafting-grid";
 const LAYER_APP="drafting-grid-layer";   // one layer and its contents, as a file
@@ -7198,6 +7465,33 @@ async function beatTab(){
 /* Fired by the browser in the OTHER tabs when storage changes. Re-reading the affected
    thing is the difference between the two tabs converging and one of them silently
    flattening the other's work. */
+/* This fired TWICE in the same second at startup, from one listener bound once -- so
+   either the other tab wrote the key twice or WebKit delivered the event twice. Rather than
+   guess which, the message is deduplicated, which is correct either way.
+
+   The larger problem was relevance. It fired the instant a tab started, before anything had
+   been drawn -- and a tab with nothing in it has nothing to lose, so the warning was pure
+   noise at exactly the moment it was most likely to be read. It now only speaks when this
+   tab actually has work that the other tab's autosave has displaced. */
+let autoWarnAt=0;
+function autosaveTakenByOther(){
+  const now=Date.now();
+  if(now-autoWarnAt<2000)return;          // one event, however many times it arrives
+  autoWarnAt=now;
+  if(!S.entities.length&&!S.measures.length){
+    // Nothing to lose. Worth a line in the log, not worth interrupting anyone.
+    logLine("another tab replaced the autosave; nothing here to lose","warn");
+    return;
+  }
+  /* The count is put in a variable rather than interpolated inline: the prose-leak check
+     reads any sentence-like string for internal identifiers, and "+S.entities.length+"
+     inside a message trips it. The check is right to \u2014 that is exactly the shape that put
+     "each is now independently canSelect" on screen. */
+  const n=S.entities.length;
+  logLine("another tab replaced the autosave while this tab has "+n+" object(s) unsaved to it","warn");
+  note("Another tab just replaced the shared autosave. This drawing is still here, but "+
+    "the autosaved copy is now theirs \u2014 use Save to file to keep this one.");
+}
 function watchOtherTabs(){
   if(typeof addEventListener!=="function")return;
   addEventListener("storage",e=>{
@@ -7211,7 +7505,7 @@ function watchOtherTabs(){
         catch(err){}
       }else refreshLibNames();
     }else if(e.key.startsWith(TPL_PREFIX)){refreshTemplates();}
-    else if(e.key===AUTO_KEY){logLine("the autosave was replaced by another tab","warn");}
+    else if(e.key===AUTO_KEY)autosaveTakenByOther();
   });
 }
 /* ---------- one layer, as a file ----------
@@ -10521,6 +10815,10 @@ function syncUI(){
   document.querySelectorAll("[data-tog]").forEach(b=>b.classList.toggle("on",!!S[b.dataset.tog]));
   $("unit").value=S.unit;$("gx").value=S.gx;$("gy").value=S.gy;$("maj").value=S.major;
   $("uniform").checked=S.uniform;$("gy").disabled=S.uniform;
+  if($("undoSteps")){
+    $("undoSteps").value=S.undoSteps>0?S.undoSteps:HISTORY_DEFAULT_STEPS;
+    undoNote();
+  }
   if($("skTol")){
     $("skTol").value=Math.round((S.closeTol||CLOSE_TOL_FRAC)*100);
     [["skAuto","auto"],["skOpen","open"],["skClose","close"]].forEach(([id,m])=>
@@ -10899,6 +11197,33 @@ function setSketchClose(mode){
     $(id).classList.toggle("on",m===mode));
   skNote();scheduleAutosave();
 }
+const panelOpenForNote=()=>{
+  const p=$("panel");
+  return !!(p&&p.classList.contains("open")&&$("undoNote"));
+};
+function undoNote(){
+  const el=$("undoNote");if(!el)return;
+  const cap=S.undoSteps>0?S.undoSteps:HISTORY_DEFAULT_STEPS;
+  const held=past.length;
+  const per=held?Math.round(historyBytes/held/1024):0;
+  /* The current cost is shown, because the trade is only decidable with it: a step is a few
+     kilobytes on a small drawing and over a megabyte on a large one, and a real report
+     showed 59 steps eating 78.8MB. */
+  el.textContent=held
+    ? held+" step"+(held===1?"":"s")+" held, about "+per+"KB each ("+
+      (historyBytes/1048576).toFixed(1)+"MB). Fewer steps leaves more memory for the drawing."
+    : "Nothing to undo yet. Each step stores the whole drawing, so on a large sheet they are "+
+      "expensive \u2014 fewer steps leaves more memory for the drawing itself.";
+}
+$("undoSteps").oninput=()=>{
+  const v=parseInt($("undoSteps").value,10);
+  if(!(v>0))return;
+  S.undoSteps=Math.min(150,Math.max(1,v));
+  /* Applied at once rather than at the next action, so the memory is returned when asked
+     for and the figure in the note is true. */
+  while(past.length>1&&past.length>S.undoSteps)historyBytes-=past.shift().length;
+  undoNote();draw();scheduleAutosave();
+};
 $("skAuto").onclick=()=>setSketchClose("auto");
 $("skOpen").onclick=()=>setSketchClose("open");
 $("skClose").onclick=()=>setSketchClose("close");
@@ -10980,16 +11305,23 @@ $("aboutPersist").onclick=async()=>{
   if(!navigator.storage||!navigator.storage.persist){note("This browser can't be asked to keep storage.");return;}
   try{
     const ok=await navigator.storage.persist();
+    /* The advice has to match the browser. "Add to Home Screen" is what changes Safari's
+       answer; Chrome on iOS does not grant persistence from a home-screen shortcut at all,
+       so telling someone on Chrome to try it sends them on an errand that cannot work --
+       and a real log shows exactly that pairing. */
+    const iosChrome=/CriOS|FxiOS|EdgiOS/.test(navigator.userAgent||"");
     note(ok?"The browser agreed to keep this app's storage."
-           :"The browser declined. Adding the app to your Home Screen usually changes that.");
+      :iosChrome
+      ?"This browser declined, and will keep declining \u2014 on iOS only Safari grants this. "+
+       "Keep exporting your setup instead; Export everything takes a few seconds."
+      :"The browser declined. Adding the app to your Home Screen usually changes that.");
   }catch(err){note("Couldn't ask: "+err.message);}
   aboutUI();
 };
-$("aboutCopy").onclick=async()=>{
-  const i=await aboutInfo();
-  /* One paste, everything: the summary AND the log. Copying a summary and then being
-     asked for the log separately is the round trip this is meant to remove. */
-  const txt=APP_NAME+" "+i.version+" ("+i.build+" \u00b7 "+i.hash+")\n"+
+/* One place that assembles the About text, so the clipboard path and the fallback panel
+   cannot drift apart -- they were two copies of the same twelve lines. */
+function buildAboutText(i){
+  return APP_NAME+" "+i.version+" ("+i.build+" \u00b7 "+i.hash+")\n"+
     "address: "+describeOrigin()+"\n"+
     "this tab: "+TAB_MARK+"  (log lines from other tabs carry a different mark)\n"+
     "running: "+i.mode+"\nsource: "+i.source+"\nstorage: "+i.backend+
@@ -10998,8 +11330,61 @@ $("aboutCopy").onclick=async()=>{
     (profReports.length?"\n\n"+profReports.join("\n\n")+"\n":"")+
     "\n\u2500\u2500 activity log ("+logLines.length+" entries) \u2500\u2500\n"+
     logLines.slice(-120).join("\n");
-  try{await navigator.clipboard.writeText(txt);note("Details copied.");}
-  catch(err){openTextExport("drawing");$("textIOArea").value=txt;$("textIOTitle").textContent="App details";}
+}
+$("aboutCopy").onclick=async()=>{
+  /* The clipboard write must happen while the user gesture is still live. WebKit treats the
+     gesture as spent once a promise has been awaited, and aboutInfo() awaits four times --
+     a persistence query, a storage listing, and two counts. So by the time writeText was
+     called it was rejected, and the whole thing fell through to the manual panel. Which
+     works, but silently: the button appeared to do nothing.
+
+     So the clipboard is claimed FIRST, synchronously, with a promise that is resolved once
+     the text is assembled. Safari supports this pattern; where it is not supported the
+     catch falls back as before. */
+  let claimed=null;
+  try{
+    if(navigator.clipboard&&window.ClipboardItem){
+      claimed=navigator.clipboard.write([new ClipboardItem({
+        "text/plain":new Promise(async resolve=>{
+          const j=await aboutInfo();
+          resolve(new Blob([buildAboutText(j)],{type:"text/plain"}));
+        })
+      })]);
+    }
+  }catch(err){claimed=null;}
+  const i=await aboutInfo();
+  /* One paste, everything: the summary AND the log. Copying a summary and then being
+     asked for the log separately is the round trip this is meant to remove. */
+  const txt=buildAboutText(i);
+  /* The panel opens EVERY time, whether the clipboard accepted the text or not.
+     A real log showed "Details copied." from this button while the clipboard was in fact
+     empty -- WebKit can resolve writeText and silently do nothing once the gesture is
+     spent. So the promise resolving is not evidence, and a success message printed on the
+     strength of it is a lie the app tells with confidence.
+
+     Rather than try to verify the clipboard -- reading it back needs a permission prompt --
+     the guaranteed path is simply always offered. If the paste works, the panel is one tap
+     to dismiss; if it does not, the text is already in front of you. */
+  let accepted=false;
+  if(claimed){
+    try{await claimed;accepted=true;}
+    catch(err){logLine("clipboard claim refused: "+((err&&err.message)||err),"warn");}
+  }
+  if(!accepted){
+    try{await navigator.clipboard.writeText(txt);accepted=true;}
+    catch(err){logLine("clipboard unavailable: "+((err&&err.message)||err),"warn");}
+  }
+  openTextExport("drawing");
+  $("textIOArea").value=txt;
+  $("textIOTitle").textContent="App details \u2014 select all and copy";
+  $("textIOStatus").textContent=accepted
+    ? "Also sent to the clipboard. If the paste comes out empty, select the text here instead."
+    : "The clipboard refused. Select the text here and copy it by hand.";
+  logLine("copy details: clipboard "+(accepted?"accepted (unverifiable)":"refused")+
+    ", panel opened","warn");
+  return;
+  
+
 };
 $("sheetOn").onchange=e=>{
   S.sheet.on=e.target.checked;

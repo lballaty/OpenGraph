@@ -104,18 +104,29 @@ node /home/claude/intent.js "$OUT1" >/dev/null 2>&1 || {
 # schema, since a schema change can invalidate them and nothing else would notice.
 node -e '
 const fs=require("fs");
-let Ajv;try{Ajv=require("/home/claude/node_modules/ajv");}catch(e){process.exit(0);}
+/* Refuse if the validator is missing, rather than exit 0. A silent pass is worse than no
+   gate: it reports success for a check that never ran, which is the failure I flagged in the
+   CI workflow and then wrote here myself. */
+let Ajv;try{Ajv=require("/home/claude/node_modules/ajv");}
+catch(e){console.error("refusing: ajv is not installed, so the schema gate cannot run");process.exit(1);}
 const dir="/mnt/user-data/outputs/repo";
-if(!fs.existsSync(dir+"/drafting-grid.schema.json"))process.exit(0);
+if(!fs.existsSync(dir+"/drafting-grid.schema.json")){
+  console.error("refusing: the schema is missing from the repo");process.exit(1);}
 const v=new Ajv({allErrors:true,strict:false}).compile(
   JSON.parse(fs.readFileSync(dir+"/drafting-grid.schema.json","utf8")));
-let bad=[];
+let bad=[],checked=0;
 ["starter","samples"].forEach(d=>{
   if(!fs.existsSync(dir+"/"+d))return;
   fs.readdirSync(dir+"/"+d).filter(f=>f.endsWith(".json")).forEach(f=>{
+    checked++;
     if(!v(JSON.parse(fs.readFileSync(dir+"/"+d+"/"+f,"utf8"))))bad.push(d+"/"+f);});
 });
 if(bad.length){console.error("refusing: shipped files no longer validate: "+bad.join(", "));process.exit(1);}
+/* A gate that validated nothing has not passed. Twenty-seven files ship; if the count comes
+   back zero the directories are missing or unreadable, and reporting that as success is the
+   same silent-pass fault again. */
+if(checked<20){console.error("refusing: only "+checked+" shipped files were checked");process.exit(1);}
+console.log("schema: "+checked+" shipped files validate");
 ' || exit 1
 node /mnt/user-data/outputs/checks.js "$OUT1" >/dev/null || {
   echo "refusing: structural checks failed \u2014 run: node checks.js"

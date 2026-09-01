@@ -485,11 +485,15 @@ G("Architecture measurements");
     /culling would save little at this zoom/.test(pr));
   ok("the pooling question is measured",/objects built per rebuild/.test(pr));
   ok("and can conclude pooling would not matter",
-    /too few for pooling to matter/.test(pr));
-  ok("the spatial index question is measured",/segments near the pointer/.test(pr));
-  ok("and can conclude an index would not pay",
-    /an index would return most of them anyway/.test(pr),
-    "an index only helps if most segments examined are far away");
+    /pooling would buy nothing/.test(pr),
+    "the verdict is now on cost rather than count");
+  /* Now that the index exists, the measurement reports what it ACHIEVES rather than the
+     locality it was built to exploit -- the old version walked every segment to count how
+     many were near, which was evidence for building it and absurd afterwards. */
+  ok("the index's narrowing is measured",/index narrowing/.test(pr));
+  ok("and can report that it is not narrowing enough",
+    /returning most of the drawing; check the cell size/.test(pr),
+    "a badly sized cell would make the index useless, silently");
   ok("state checking is gated behind the profiler",
     /if\(!PROF\.on\)return/.test(codeOf("measState")));
   ok("counters reset with the profiler",/MEAS\.stateClashes=0/.test(codeOf("profReset")),
@@ -631,6 +635,365 @@ G("Tab tracking");
     "an async write during teardown may not complete");
   ok("the beat interval is the constant, not a literal",
     /setInterval\(beatTab,TAB_BEAT_MS\)/.test(srcAll));
+}
+
+// ---------- undo history size ----------
+G("Undo history size");
+{
+  /* A device report showed 59 steps consuming 78.8MB of an 80MB cap -- 1.33MB per step on a
+     39,740-node drawing. Paying 80MB of a roughly 200-400MB tab budget for 59 undos nobody
+     asked for is a poor trade, and it is the drawing that suffers when memory runs short. */
+  ok("the default is 25 steps",/HISTORY_DEFAULT_STEPS=25/.test(srcAll));
+  ok("the state default matches the constant",/undoSteps:25/.test(srcAll),
+    "S is built before the constant exists, so the value is repeated \u2014 this keeps them equal");
+  ok("the old 150-step limit is gone",!/past\.length>150/.test(srcAll));
+  ok("the byte cap remains as a backstop",/historyBytes>HISTORY_MAX_BYTES/.test(srcAll),
+    "for a document where even 25 steps will not fit");
+  ok("the step count is configurable",/id="undoSteps"/.test(srcAll));
+  ok("and range-checked on input",/Math\.min\(150,Math\.max\(1,v\)\)/.test(srcAll));
+  ok("saved with the drawing",/undoSteps:S\.undoSteps/.test(srcAll));
+  ok("and range-checked on load",/d\.undoSteps>0&&d\.undoSteps<=150/.test(srcAll));
+  ok("lowering it returns the memory at once",
+    /while\(past\.length>1&&past\.length>S\.undoSteps\)/.test(srcAll),
+    "applying it at the next action would make the figure shown untrue");
+
+  /* Notification, both places, when the BYTE cap bites before the step cap -- which the
+     person cannot know unless told, and which silently shortens how far back they can go. */
+  const hp=codeOf("historyPressure");
+  ok("the log gets it once a session, with numbers",
+    /histWarnedSession/.test(hp)&&/KB per step/.test(hp));
+  ok("the UI gets it, at most every two minutes",/Date\.now\(\)-histWarnAt<120000/.test(hp),
+    "a message per action is the noise this app has produced twice already");
+  ok("it says what to do",/Save to a file/.test(hp));
+  ok("it distinguishes the two limits",
+    /if\(historyBytes>HISTORY_MAX_BYTES\)droppedForBytes=true/.test(srcAll),
+    "hitting the step limit is the setting working and needs no comment");
+  /* The figure shown must be live. */
+  ok("the panel figure updates while you work",
+    /if\(panelOpenForNote\(\)\)undoNote\(\)/.test(codeOf("updateStatus")),
+    "a stale number would have someone choosing from a figure true ten minutes ago");
+  /* codeOf finds `function` declarations; panelOpenForNote is an arrow const, so it came
+     back empty and the test failed on correct code. Asserted against the source instead. */
+  ok("and costs nothing when the panel is shut",
+    /const panelOpenForNote=\(\)=>\{[\s\S]{0,160}classList\.contains\("open"\)/.test(srcAll));
+  ok("the note gives the per-step cost",/KB each/.test(codeOf("undoNote")),
+    "the trade is only decidable with it: a step is kilobytes on a small sheet, megabytes on a large one");
+  // the arithmetic
+  const fits=(perStepKB,cap)=>Math.min(cap,Math.floor(80*1024/perStepKB));
+  ok("25 steps at 1.33MB each fit inside the byte cap",fits(1330,25)===25,
+    "the reported case now fits comfortably");
+  ok("a very large document is still byte-limited",fits(8000,25)<25,
+    "which is when the warning fires");
+}
+
+// ---------- dragging a group ----------
+G("Dragging a group");
+{
+  /* Three separate faults behind "only the outline appears, drags sometimes, sometimes
+     jumps". */
+
+  /* 1. The outline moved and the geometry did not: the overlay draws the group's dashed box
+        fresh every frame, while the members sat in the cached bitmap. Fixed in 3.32.0 by
+        dragVersion; asserted there. Here: confirm the overlay really is the box's source,
+        because that is what made the symptom look like a selection problem. */
+  ok("the overlay draws the group outline",
+    /setLineDash\(\[6,4\]\)[\s\S]{0,120}strokeRect/.test(srcAll),
+    "drawn fresh each frame, unlike the members");
+
+  /* 2. The jump. 3.31.0 floored the step so a keyboard nudge could not be invisible, and
+        applyMove quantised the DRAG DELTA to that same floored step -- 109mm at site zoom,
+        so a drag advanced in jumps. One constant, two situations that want opposite things. */
+  const MIN=1;
+  const floor=(b,z)=>b*z>=MIN?b:b*Math.ceil(MIN/(b*z));
+  ok("a nudge step stays visible",floor(1,0.0092)*0.0092>=1);
+  ok("a drag is not quantised to that floor",
+    /const sx=gridSnapStepX\(\), sy=gridSnapStepY\(\)/.test(codeOf("applyMove")),
+    "109mm jumps at site zoom is what the floor did to a drag");
+  ok("the two steps are separate functions",
+    /const gridSnapStepX=/.test(srcAll)&&/const snapStepX=\(\)=>stepFloor/.test(srcAll));
+  ok("nudge still uses the floored one",/stepFloor/.test(
+    (/const nudgeStepX=[^\n]*/.exec(srcAll)||[""])[0]));
+
+  /* 3. "Sometimes but not always": hit testing needs a tap within ~11 screen pixels of a
+        LINE, so on a group whose parts are spread out most of the dashed box was dead
+        space. Selecting still needs geometry; once selected, the box drags. */
+  const ig=codeOf("insideSelectedGroup");
+  ok("a selected group can be dragged from inside its outline",!!ig);
+  ok("only groups, and only selected ones",/o\.t!=="group"/.test(ig)&&/S\.sel/.test(ig));
+  ok("a locked group is excluded",/canModify\(o\)/.test(ig));
+  ok("the region matches the outline that is drawn",/6\/S\.view\.zoom/.test(ig),
+    "what drags should be what you can see");
+  /* The null pick this introduces must not clear the selection. */
+  ok("a drag from inside the outline keeps the selection",
+    /pick\.o&&!S\.sel\.includes\(pick\.o\)/.test(srcAll),
+    "replacing it with [null] would clear it and the drag would do nothing");
+  ok("and a tap inside the outline keeps it too",
+    /if\(wasO\)toggleAt/.test(srcAll),
+    "toggleAt would hit-test, find nothing, and deselect");
+}
+
+// ---------- spatial index ----------
+G("Spatial index");
+{
+  /* Built on measurement. Two device runs agreed: snapping was 12,804ms of ~21,400ms total
+     -- 60% of all frame time -- and only 0.12% of the 11,887 segments examined per snap
+     were anywhere near the pointer. I twice declined this as premature; the figure that
+     settled it came from the device rather than from me. */
+  const dist=(a,b)=>Math.hypot(b.x-a.x,b.y-a.y);
+  let geomVersion=1, segIndex=null, segIndexVer=-1, segIndexAll=false;
+  const PROF={on:false}, profStart=()=>0, profEnd=()=>{};
+  let SEGS=[];
+  const segments=()=>SEGS;
+  eval(grab("function buildSegIndex","function segIndexFor","function segsNear"));
+  const make=(n,extent,len)=>{
+    const out=[];
+    for(let i=0;i<n;i++){
+      const x=(i*7919%extent), y=(i*104729%extent), a=i*0.7;
+      out.push({a:{x,y},b:{x:x+Math.cos(a)*len,y:y+Math.sin(a)*len}});
+    }
+    return out;
+  };
+  const brute=(p,tol)=>SEGS.filter(g=>{
+    const x0=Math.min(g.a.x,g.b.x)-tol,x1=Math.max(g.a.x,g.b.x)+tol;
+    const y0=Math.min(g.a.y,g.b.y)-tol,y1=Math.max(g.a.y,g.b.y)+tol;
+    return p.x>=x0&&p.x<=x1&&p.y>=y0&&p.y<=y1;
+  });
+  /* Correctness first: an index that is fast and wrong is worse than the loop. */
+  let missed=0;
+  for(let t=0;t<60;t++){
+    SEGS=make(400,10000,120); geomVersion++;
+    const p={x:(t*911)%10000,y:(t*577)%10000};
+    const got=new Set(segsNear(p,50,false));
+    for(const w of brute(p,50)) if(!got.has(w)) missed++;
+  }
+  ok("the index never misses a segment brute force finds",missed===0,missed+" missed");
+  /* A single line across the whole drawing would otherwise occupy tens of thousands of
+     cells, so it goes in an overflow list every query checks. */
+  SEGS=make(200,10000,120).concat([{a:{x:0,y:5000},b:{x:10000,y:5000}}]); geomVersion++;
+  const spanner=SEGS[SEGS.length-1];
+  ok("a line spanning the drawing is still found",
+    segsNear({x:5000,y:5000},5,false).includes(spanner),
+    "the overflow list is what makes that work");
+  ok("the source has an overflow list",/map\.get\("\*"\)/.test(srcAll));
+  /* And it must narrow, or it has achieved nothing. */
+  SEGS=make(20000,200000,700); geomVersion++;
+  const got=segsNear({x:100000,y:100000},300,false);
+  ok("a query returns a small fraction of the list",got.length<SEGS.length/50,
+    got.length+" of "+SEGS.length);
+  ok("the index is keyed on the geometry version",
+    /segIndexVer!==geomVersion/.test(codeOf("segIndexFor")));
+  ok("and rebuilt separately for the all-entities set",
+    /segIndexAll!==!!all/.test(codeOf("segIndexFor")),
+    "the visible and hidden sets are different lists");
+  /* A pathological tolerance must not sweep the grid more slowly than the loop. */
+  ok("an absurd tolerance falls back to the full list",
+    /return segs;/.test(codeOf("segsNear")));
+  /* Every per-move snap must use it, or the cost stays. */
+  /* 180 characters was too short for the near branch, whose comment sits between the guard
+     and the call. Widened rather than removed: the point is that each branch reaches the
+     index, not how close together the two lines are. */
+  ["near","mid","perp"].forEach(k=>
+    ok(k+"-snapping uses the index",
+      new RegExp("S\\.snaps\\."+k+"[\\s\\S]{0,400}segsNear\\(").test(srcAll)));
+  ok("intersection snapping pairs only the local set",
+    /const near=segsNear\(raw,tol\*3,false\)/.test(srcAll),
+    "8.07 billion pairs at 127,000 segments becomes a few dozen");
+  ok("the perpendicular set is centred on the pointer, not the anchor",
+    /if\(S\.snaps\.perp&&anchor\) for\(const s of segsNear\(raw,/.test(srcAll),
+    "the candidate is the foot of the perpendicular, useful only if it is near the pointer");
+  /* The verdict I got wrong. */
+  ok("the pooling verdict is judged on cost, not count",
+    /rebuildMs>4/.test(codeOf("profReport")),
+    "20,000 allocations costing 0.39ms are not an argument for pooling");
+}
+
+// ---------- the picture must follow a drag ----------
+G("Drag repaints the geometry");
+{
+  /* Reported precisely: dragging a large group moved the handles but the lines stayed put
+     until release. The cause was conflating two different questions in one counter.
+
+       geomVersion  -- has geometry changed enough to invalidate the SEGMENT cache?
+                       Bumping it per drag frame would rebuild 19,250 segments each time.
+       dragVersion  -- has the PICTURE changed? It has, on every frame of a drag.
+
+     staticKey used geomVersion alone, so during a drag the key held still, the cached
+     bitmap of the unmoved lines was blitted, and only the overlay was drawn fresh. */
+  ok("a separate counter tracks the picture",/let dragVersion=0/.test(srcAll));
+  ok("moving bumps it",/dragVersion\+\+/.test(codeOf("applyMove")));
+  ok("resizing and vertex edits bump it too",/dragVersion\+\+/.test(codeOf("applyHandle")),
+    "a handle drag moves the picture as much as a move does");
+  ok("the static key includes it",/geomVersion\+"\."\+dragVersion/.test(codeOf("staticKey")),
+    "otherwise the cache cannot know the picture changed");
+  ok("the segment cache is NOT invalidated by a drag",
+    !/segsDirty/.test(codeOf("applyMove")),
+    "rebuilding 19,250 segments per frame is what geomVersion was protecting against");
+  /* The consequence, checked as behaviour: a key that changes every frame means the
+     thrash detection paints directly, which is correct during a drag. */
+  const worth=(key,prev,paintMs)=>key===prev&&paintMs>6;
+  ok("a changing key forces a direct paint",!worth("g.1","g.0",7.2),
+    "a blit would show the previous frame's geometry");
+  ok("a still frame still uses the cache",worth("g.5","g.5",7.2));
+  ok("and a light drawing still never does",!worth("g.5","g.5",1.2));
+}
+
+// ---------- step floor ----------
+G("Move steps stay visible");
+{
+  /* A real log showed "Moved 1 mm, less than a pixel at this zoom" a hundred times in three
+     seconds from a held arrow key, while the object sat still. The step was in MODEL units,
+     so on a site plan it was a fraction of a pixel -- the fifth model-versus-screen fault
+     in one session. */
+  const MIN=1;
+  const floor=(base,zoom)=>base*zoom>=MIN?base:base*Math.ceil(MIN/(base*zoom));
+  [[1,3.1],[1,1],[1,0.3],[1,0.0092],[1,0.0052]].forEach(([g,z])=>
+    ok("a "+g+"mm step at zoom "+z+" is at least a pixel",floor(g,z)*z>=1,
+      (floor(g,z)*z).toFixed(2)+"px"));
+  ok("a step already visible is left alone",floor(1,3.1)===1,
+    "raising it needlessly would move things further than asked");
+  ok("the floor lands on a grid multiple",floor(1,0.0092)%1===0);
+  ok("a coarse grid is untouched",floor(1000,0.0092)===1000);
+  ok("the source floors both snap and nudge",
+    /const snapStepX=\(\)=>stepFloor/.test(srcAll)&&
+    /const nudgeStepX=\(\)=>stepFloor/.test(srcAll));
+  ok("the warning is said once, not per keypress",
+    /Date\.now\(\)-nudgeWarnAt>3000/.test(codeOf("nudge")),
+    "a held key buried the log with one repeated sentence");
+  /* And the profiler counted a direct paint as a blit. */
+  ok("direct paints are counted separately from blits",
+    /PROF\.directPaints\+\+/.test(codeOf("draw")),
+    "3,625 full repaints were reported as 3,625 cheap copies");
+  ok("the report shows both",/direct paints "\+PROF\.directPaints/.test(codeOf("profReport")));
+}
+
+// ---------- copy and paste ----------
+G("Copy and paste");
+{
+  /* Reported as "copy and paste doesn't work for group". Driving it headlessly showed it
+     does work -- two groups, correct contents. The offset was the problem: one grid step in
+     MODEL units, which on a 1mm grid at ordinary zoom is THREE PIXELS, so the copy landed
+     underneath the original and nothing appeared to have happened. On the 120m site plan it
+     was a hundredth of a pixel. */
+  const PX=14;
+  const off=(stepMM,zoom)=>{
+    const want=PX/zoom, s=stepMM||1;
+    return Math.max(s,Math.round(want/s)*s);
+  };
+  const px=(stepMM,zoom)=>off(stepMM,zoom)*zoom;
+  [[1,3.1],[1,1],[1,0.3],[5,3.1],[1000,0.0092],[1000,0.0052],[100,0.05]].forEach(([g,z])=>
+    ok("a copy is visible on a "+g+"mm grid at zoom "+z,px(g,z)>=10&&px(g,z)<=25,
+      px(g,z).toFixed(1)+"px"));
+  ok("the old behaviour was invisible",1*3.1<4,
+    "one grid step on a 1mm grid was 3.1px \u2014 underneath the original");
+  ok("the offset is never smaller than one grid step",off(5,3.1)>=5,
+    "a coarse grid must not be violated");
+  ok("and always lands on a grid multiple",off(1000,0.0092)%1000===0);
+  ok("the source works from screen pixels",/PASTE_OFFSET_PX\/S\.view\.zoom/.test(srcAll));
+  /* A group must survive the round trip: this is what was reported broken. */
+  const pc=codeOf("pasteClipboard");
+  ok("paste recurses into a group when translating",
+    /translateObj/.test(pc),"translateObj handles group items");
+  ok("a pasted copy gets fresh ids",/remap/.test(pc),
+    "two objects answering to one id makes links point at the wrong one");
+  ok("a link is only carried when both ends came with it",
+    /ids\.has\(o\.a\.id\)&&ids\.has\(o\.b\.id\)/.test(codeOf("copySelected")),
+    "one end outside would have nothing to point at");
+}
+
+// ---------- copying the log ----------
+G("Copy details & log");
+{
+  /* The clipboard write must happen while the user gesture is still live. WebKit treats the
+     gesture as spent once a promise has been awaited -- and aboutInfo() awaits four times,
+     for a persistence query, a storage listing and two counts. So writeText was rejected
+     every time on iOS and the whole thing fell through to the manual panel, silently. */
+  const h=(/\$\("aboutCopy"\)\.onclick=async\(\)=>\{[\s\S]*?\n\};/.exec(srcAll)||[""])[0];
+  const iClaim=h.indexOf("navigator.clipboard.write(");
+  const iAwait=h.indexOf("await aboutInfo()");
+  ok("the clipboard is claimed before any await",
+    iClaim>=0&&iAwait>=0&&iClaim<iAwait,
+    "after an await the gesture is spent and the write is refused");
+  ok("the text is supplied as a promise",/new Promise\(async resolve/.test(h),
+    "that is what lets the claim happen first and the text arrive later");
+  ok("writeText remains as a second path",/clipboard\.writeText/.test(h),
+    "simpler, and it works on a desktop browser");
+  /* The fallback worked all along. What it did not do was SAY it was the fallback -- a
+     panel opening with the text in it looks identical whether the clipboard succeeded. */
+  /* A real log showed "Details copied." from this button while the clipboard was empty --
+     WebKit can resolve writeText and silently do nothing once the gesture is spent. So the
+     promise resolving is not evidence, and a success message printed on it is a lie the app
+     tells confidently. I believed it twice: once concluding the clipboard worked, once
+     declaring it fixed. */
+  ok("the panel opens whether or not the clipboard accepted",
+    h.indexOf("openTextExport")>0&&!/return;\s*\}\s*$/.test(h.slice(0,h.indexOf("openTextExport"))),
+    "the guaranteed path is always offered rather than kept as a fallback");
+  ok("success is never claimed outright",!/note\("Details copied\."\)/.test(h),
+    "the promise cannot support that claim");
+  ok("the clipboard result is described as unverifiable",
+    /accepted \(unverifiable\)/.test(h),
+    "saying so is better than pretending either way");
+  ok("the panel says what to do if the paste is empty",
+    /select the text here/.test(h));
+  ok("a refusal is logged",/clipboard unavailable|clipboard claim refused/.test(h),
+    "so the next report shows why the last one was hard to get");
+  /* The text is built once. It was two copies of the same twelve lines, one for each path,
+     which is how they drift apart. */
+  ok("one builder assembles the text",/function buildAboutText/.test(srcAll));
+  ok("both paths use it",
+    /buildAboutText\(j\)/.test(srcAll)&&/buildAboutText\(i\)/.test(srcAll));
+  ok("the log and any performance reports are included",
+    /profReports\.join/.test(codeOf("buildAboutText"))&&
+    /logLines\.slice\(-120\)/.test(codeOf("buildAboutText")));
+}
+
+// ---------- advice that matches the browser ----------
+G("Persistence advice");
+{
+  /* A real log paired "The browser declined" with "Adding the app to your Home Screen
+     usually changes that" -- on Chrome for iOS, where a home-screen shortcut does not grant
+     persistence at all. Advice that cannot work is worse than none: it sends someone on an
+     errand and costs them the trust in everything else the app says. */
+  const h=(/\$\("aboutPersist"\)\.onclick=async\(\)=>\{[\s\S]*?\n\};/.exec(srcAll)||[""])[0];
+  ok("the advice branches on the browser",/CriOS|FxiOS|EdgiOS/.test(h));
+  ok("iOS Chrome is told it will keep declining",/keep declining/.test(h),
+    "there is no setting that changes it");
+  ok("and given something that does work",/Export everything/.test(h));
+  ok("Safari still gets the Home Screen advice",/Home Screen/.test(h));
+}
+
+// ---------- cross-tab notices ----------
+G("Cross-tab notices");
+{
+  /* A real log showed "the autosave was replaced by another tab" twice in the same second,
+     from one listener bound once -- so either the other tab wrote twice or WebKit delivered
+     the event twice. Deduplicating is correct either way, and guessing which was not
+     necessary to fix it. */
+  const fn=codeOf("autosaveTakenByOther");
+  ok("the notice is deduplicated",/now-autoWarnAt<2000/.test(fn),
+    "one event, however many times it arrives");
+  /* The larger problem was relevance: it fired the instant a tab started, before anything
+     was drawn, and a tab with nothing in it has nothing to lose. */
+  ok("an empty tab logs but does not interrupt",
+    /!S\.entities\.length&&!S\.measures\.length/.test(fn),
+    "noise at the moment it is most likely to be read");
+  ok("a tab with work gets a real warning",/use Save to file/.test(fn),
+    "and is told what to do about it");
+  ok("it says how much is at stake",/const n=S\.entities\.length/.test(fn)&&/\+n\+/.test(fn),
+    "the count is held in a variable, since an identifier inside a message trips the "+
+    "prose-leak check \u2014 correctly, as that shape once put an internal name on screen");
+  ok("only one storage listener is bound",
+    (srcAll.match(/addEventListener\("storage"/g)||[]).length===1,
+    "two would double every cross-tab message");
+  // the dedup window, checked as behaviour
+  /* last starts at 0, matching the app, so a first event at t=1000 is only 1000ms after it
+     and falls INSIDE the window. My first version asserted the opposite and failed on
+     correct logic. Starting the clock where the app does makes the test say what it means. */
+  const win=2000;
+  let last=-win;
+  const speak=t=>{if(t-last<win)return false;last=t;return true;};
+  ok("the first event speaks",speak(1000));
+  ok("a second 400ms later is dropped",!speak(1400));
+  ok("one a minute later speaks",speak(61000));
 }
 
 // ---------- shared log attribution ----------
@@ -1050,15 +1413,19 @@ G("Intersection snap guard");
   const MAX=800;
   const pairs=n=>n*(n-1)/2;
   const msFor=n=>pairs(n)*23e-9*1000;      // 23ns per pair, measured
-  ok("the limit fits inside a frame",msFor(MAX)<16,
-    msFor(MAX).toFixed(1)+"ms at "+MAX+" segments");
-  ok("2,000 segments would not have",msFor(2000)>16,
-    "my first choice, measured at "+msFor(2000).toFixed(0)+"ms \u2014 three frames");
-  ok("the stress file is far past it",127083>MAX);
-  ok("the source caps it",/segs\.length<=INTER_SNAP_MAX/.test(srcAll));
-  ok("the limit is 800",/INTER_SNAP_MAX=800/.test(srcAll));
+  /* These asserted the pre-index behaviour: a cap of 800 over the WHOLE drawing. With the
+     spatial index the pairing runs over the pointer's neighbourhood instead, so the cap
+     bounds a local crowd rather than the file, and 400 of those is well under a frame. The
+     old assertions were correct when written and are now describing something that no
+     longer exists. */
+  ok("the limit fits inside a frame",msFor(400)<16,
+    msFor(400).toFixed(1)+"ms at 400 local segments");
+  ok("bounding the whole drawing would not have",msFor(20000)>16,
+    "which is why it now bounds only the neighbourhood");
+  ok("the source caps the local set",/near\.length<=INTER_SNAP_MAX/.test(srcAll));
+  ok("the limit is 400",/INTER_SNAP_MAX=400/.test(srcAll));
   ok("other snaps keep working when it stands down",
-    /Every other kind of snapping still works/.test(srcAll),
+    /every other kind of snapping still works/i.test(srcAll),
     "standing down one feature must not read as snapping being broken");
   ok("it is said once, not per pointer move",/interSnapWarned/.test(srcAll));
   ok("and reset when a drawing loads",/resetInterWarn\(\)/.test(srcAll),
