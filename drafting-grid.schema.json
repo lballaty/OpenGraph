@@ -154,6 +154,22 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "description": "Line-end size in mm."
+        },
+        "op": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the whole object, outline included. Absent means 1."
+        },
+        "fop": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the fill within the object; multiplies with op."
+        },
+        "lock": {
+          "type": "boolean",
+          "description": "Locked: still selectable, but cannot be moved, styled or deleted until unlocked."
         }
       }
     },
@@ -236,6 +252,22 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "description": "Hatch spacing in mm."
+        },
+        "op": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the whole object, outline included. Absent means 1."
+        },
+        "fop": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the fill within the object; multiplies with op."
+        },
+        "lock": {
+          "type": "boolean",
+          "description": "Locked: still selectable, but cannot be moved, styled or deleted until unlocked."
         }
       }
     },
@@ -307,6 +339,22 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "description": "Hatch spacing in mm."
+        },
+        "op": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the whole object, outline included. Absent means 1."
+        },
+        "fop": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the fill within the object; multiplies with op."
+        },
+        "lock": {
+          "type": "boolean",
+          "description": "Locked: still selectable, but cannot be moved, styled or deleted until unlocked."
         }
       }
     },
@@ -367,6 +415,22 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "description": "Label height in mm."
+        },
+        "op": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the whole object, outline included. Absent means 1."
+        },
+        "fop": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the fill within the object; multiplies with op."
+        },
+        "lock": {
+          "type": "boolean",
+          "description": "Locked: still selectable, but cannot be moved, styled or deleted until unlocked."
         }
       }
     },
@@ -424,6 +488,22 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "description": "Label height in mm."
+        },
+        "op": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the whole object, outline included. Absent means 1."
+        },
+        "fop": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the fill within the object; multiplies with op."
+        },
+        "lock": {
+          "type": "boolean",
+          "description": "Locked: still selectable, but cannot be moved, styled or deleted until unlocked."
         }
       }
     },
@@ -468,6 +548,22 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "description": "Label height in mm."
+        },
+        "op": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the whole object, outline included. Absent means 1."
+        },
+        "fop": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the fill within the object; multiplies with op."
+        },
+        "lock": {
+          "type": "boolean",
+          "description": "Locked: still selectable, but cannot be moved, styled or deleted until unlocked."
         }
       }
     },
@@ -929,6 +1025,20 @@
               "type": "string"
             }
           }
+        },
+        "sketchClose": {
+          "enum": [
+            "auto",
+            "open",
+            "close"
+          ],
+          "description": "Whether a freehand stroke may become a closed shape: decided from the geometry, never, or whenever it wraps back. Absent means auto."
+        },
+        "closeTol": {
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 0.5,
+          "description": "Closure tolerance as a fraction of the stroke's path length. Used only when sketchClose is auto. Absent means 0.12."
         }
       }
     },
@@ -1092,10 +1202,26 @@
         },
         "l": {
           "type": "integer"
+        },
+        "op": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the whole object, outline included. Absent means 1."
+        },
+        "fop": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Opacity of the fill within the object; multiplies with op."
+        },
+        "lock": {
+          "type": "boolean",
+          "description": "Locked: still selectable, but cannot be moved, styled or deleted until unlocked."
         }
       }
     }
   },
-  "version": "3.1",
-  "$comment": "Schema revision 3.1, 2026-08-29. Matches app version 3.1."
+  "version": "3.19",
+  "$comment": "Schema revision 3.19, 2026-08-30. Adds sketchClose and closeTol."
 }
