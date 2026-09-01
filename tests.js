@@ -637,6 +637,113 @@ G("Tab tracking");
     /setInterval\(beatTab,TAB_BEAT_MS\)/.test(srcAll));
 }
 
+// ---------- zoom diagnostics ----------
+G("Zoom limits and reporting");
+{
+  /* A report of "I cannot zoom out past 10 m" that I could NOT reproduce: both the wheel
+     and pinch paths reach MIN_ZOOM in the harness, and the scale bar label progresses
+     correctly to 200 m. Rather than guess a fourth time, the app now says which. */
+  /* 0.001 allowed about 1.4 km across, which sounded generous and was the clamp a report
+     kept hitting: zooming out stopped and nothing changed size, which is exactly what
+     reaching a limit looks like. Fifty times wider now, and nothing pays for it -- the grid
+     already refuses below four pixels and says so, the decimation guard allows fifteen
+     decades, and coordinates stay Float64. */
+  /* Asked directly: why is there a limit at all? It protects three things -- toM divides
+     by zoom so it cannot be zero, a pinch whose fingers meet gives a ratio near zero, and
+     gridStep needs a bound on its decimation loop. None of those needs a large number.
+     Nothing else degrades: coordinates are Float64 and unchanged by zoom, and screen
+     coordinates get SMALLER as you zoom out so precision improves. 0.001 was not derived
+     from any of that; I picked it. */
+  ok("the limits are wide",/MIN_ZOOM=1e-7, MAX_ZOOM=4000/.test(srcAll),
+    "0.001 shows over a kilometre across, so the limit is not 10 m");
+  const nz=codeOf("noteZoomClamp");
+  ok("a clamped gesture reports itself",!!nz);
+  ok("it says what was asked for and what was allowed",
+    /asked for/.test(nz)&&/limit is/.test(nz));
+  ok("and what the scale bar would then read",/scale bar reads/.test(nz),
+    "so a stuck label can be told from a stuck zoom");
+  /* Was once a session. Changed deliberately: someone who zooms out, works, and zooms out
+     again an hour later deserves telling both times. */
+  ok("throttled rather than once a session",/Date\.now\(\)-zoomClampAt<4000/.test(nz));
+  ok("and only when actually clamped",
+    /if\(want>=MIN_ZOOM&&want<=MAX_ZOOM\)return/.test(nz));
+  ok("both gesture paths report",
+    /noteZoomClamp\(wantPinch,"pinch"\)/.test(srcAll)&&
+    /noteZoomClamp\(wantWheel,"wheel"\)/.test(srcAll));
+  /* And the status bar states the span directly, because the scale bar is a round number
+     chosen for the BAR's length, not the width of the window -- it can look stuck while
+     the zoom moves. */
+  ok("the Grid cell states the view span",/"  \\u00b7  view "\+fmtBig\(W\/S\.view\.zoom\)/.test(srcAll));
+  const span=z=>1366/z;
+  ok("a wide view reads thousands of kilometres",Math.round(span(1e-7))===13660000000,
+    "13,660 km, against 1.4 km before");
+  ok("the reason for a limit is recorded",/toM divides by zoom/.test(srcAll),
+    "so nobody tightens it again without knowing what it is for");
+  const GRID_MIN_PX=4;
+  const gridStep=(base,zoom)=>{let s2=base,g=0;while(s2*zoom<GRID_MIN_PX&&g++<15)s2*=10;
+    return s2*zoom<GRID_MIN_PX?null:s2;};
+  ok("the grid still decimates at the new limit",gridStep(1,1e-7)===1e8,
+    String(gridStep(1,1e-7))+" mm, which is 100 km");
+  ok("and gives up gracefully rather than hanging",gridStep(1,1e-20)===null,
+    "the guard is fifteen decades");
+  /* The scale bar is a ruler, not a span. Reading it as "how far can I see" is the natural
+     mistake and cost several exchanges. */
+  /* Reaching a limit and having nothing happen is indistinguishable from the app being
+     broken -- which is how it was reported, and it took several exchanges to tell which. */
+  ok("hitting the limit says so on screen",/That is as far out as it goes/.test(srcAll),
+    "a limit that announces itself removes a whole class of confusion");
+  /* The string wraps across a line in the source, so it is matched in two pieces. */
+  ok("and gives the figure",/the view is "\+fmtBig/.test(srcAll)&&/across\."/.test(srcAll));
+  ok("throttled, not once a session",/Date\.now\(\)-zoomClampAt<4000/.test(srcAll),
+    "someone who zooms out twice deserves telling twice");
+  /* A view thousands of kilometres wide was reading as "2000000 m". */
+  const UPa={m:{to:"km",f:1000,at:1000}};
+  const step2=(v,unit)=>{const u2=UPa[unit];return u2&&Math.abs(v)>=u2.at?[v/u2.f,u2.to]:[v,unit];};
+  ok("metres step up to kilometres",step2(1366,"m")[1]==="km");
+  ok("but only past a thousand",step2(500,"m")[1]==="m");
+  ok("the source has the second step",/const UP2=\{m:\{to:"km"/.test(srcAll));
+  ok("feet step to miles, not kilometres",/ft:\{to:"mi"/.test(srcAll),
+    "a drawing in inches is not going to want kilometres");
+
+  ok("the scale bar states the view span beside it",
+    /"view "\+fmtBig\(W\/S\.view\.zoom\)\+" across"/.test(codeOf("drawScaleBar")),
+    "a bar length and a view width are different questions");
+  ok("and it changes with every step",span(0.011)!==span(0.005),
+    "if this figure sticks, the zoom is genuinely stuck");
+}
+
+// ---------- radius and diameter ----------
+G("Circle size readout");
+{
+  /* The bar offered Area and Perimeter for a circle -- neither of which is the number
+     anyone wants when drawing a hole or a turning circle. */
+  const us=codeOf("updateStatus");
+  ok("there is a radius cell",/id="srad"/.test(srcAll));
+  ok("it shows both R and diameter",/"R "\+fmtBig\(rs\[0\]\)/.test(us)&&
+    /fmtBig\(rs\[0\]\*2\)/.test(us),
+    "converting in your head while reading a screen is needless friction");
+  ok("an arc also shows its included angle",/only\.t==="arc"/.test(us),
+    "the third thing you need, and the one you cannot derive from the other two");
+  ok("it scales units like every other readout",/fmtBig\(rs\[0\]\)/.test(us),
+    "a 3m turning circle should not read 3000 mm");
+  /* A selection of several. */
+  ok("equal radii collapse to one figure with a count",/"  \\u00d7"\+arcs\.length/.test(us));
+  ok("mixed radii show the range, not a lie",/" to "\+fmtBig\(Math\.max/.test(us),
+    "a single figure for three different circles would be wrong");
+  ok("it looks inside groups",/flattenAll\(\[o\]\)/.test(us));
+  /* Hidden when irrelevant, unlike Area and Perimeter -- deliberately. */
+  ok("the cell hides when nothing round is selected",
+    /radCell\.style\.display="none"/.test(us));
+  ok("and the inconsistency is explained",/Deliberately inconsistent/.test(srcAll),
+    "the bar scrolls, and a meaningless cell should not push useful ones off the end");
+  ok("there is a help entry",/i:"circle-size"/.test(srcAll));
+  // the arithmetic
+  const dia=r=>r*2;
+  ok("diameter is twice the radius",dia(250)===500);
+  ok("an arc sweep converts to degrees",
+    Math.round(Math.abs(Math.PI/2)*180/Math.PI)===90);
+}
+
 // ---------- a box must cover what is drawn ----------
 G("Bounding boxes and culling");
 {
@@ -679,9 +786,16 @@ G("Pinned commands");
      worst version of the scrolling fault, because the way OUT of any other state was the
      thing out of reach. Select deselects, grabs handles and stops drawing; without it you
      are stuck in whatever tool you are in. */
+  /* Third report of the same shape in one session: Select unreachable, the top button of a
+     floating bar unreachable, and no way to Select all. The rule worth holding is that a
+     command which is the only way OUT of a state must not live in a scrolling list. */
+  ok("Select all is pinned",/2:\["selall"/.test(srcAll),
+    "it was behind Cmd+A, and an iPad has no Cmd key");
   ok("Select is pinned",/PINNED=\{1:\["select"\]/.test(srcAll),
     "it is the tool you need to recover from any other state");
-  ok("Undo is pinned too",/2:\["undo"/.test(srcAll),
+  /* Matched on the list contents rather than its first element: adding selall shifted undo
+     out of position and failed a test about correct code. */
+  ok("Undo is pinned too",/"selall","undo"/.test(srcAll),
     "the other way back from a mistake");
   ok("Settings and the guide stay pinned",/"settings","keys"/.test(srcAll));
   /* Pinned means OUTSIDE the scrolling list, which is the whole point. */
@@ -693,6 +807,16 @@ G("Pinned commands");
     "the list scrolls above it; the pin does not");
   ok("each bar pins its own",/PINNED\[n\]\|\|\[\]/.test(codeOf("buildBars")),
     "Select is on bar 1 and Undo on bar 2");
+  /* The long press is the stronger guarantee: a gesture on the canvas is reachable wherever
+     you are, and cannot scroll away, be collapsed, or be hidden behind a floating panel. */
+  const oq=codeOf("openQuick");
+  ok("the quick menu always offers the way out",/const ALWAYS=\["select","selall","undo"\]/.test(oq));
+  ok("under a heading of its own",/Always here/.test(oq));
+  ok("without repeating what is already listed",/!shownSet\.has\(k\)/.test(oq),
+    "the top-used list may already contain them");
+  ok("and honours a hidden command",/!isHidden\(k\)/.test(oq),
+    "someone who hid a command meant it");
+
   /* And the underlying fault stays fixed: pinning is the belt, min-height:0 is the braces. */
   ok("the list can still shrink so it scrolls properly",
     /\.bar\.float \.items\{[^}]*min-height:0/.test(css),
@@ -1618,6 +1742,20 @@ G("Copy details & log");
      promise resolving is not evidence, and a success message printed on it is a lie the app
      tells confidently. I believed it twice: once concluding the clipboard worked, once
      declaring it fixed. */
+  /* The panel opened with the text in it and NOTHING SELECTED, so copying meant tapping
+     in, long-pressing, Select All, then Copy -- four steps on a tablet, and missing any of
+     them yields an empty paste. Eight empty attachments in a row is what that looks like
+     from the other end, and I spent them blaming the transfer. */
+  ok("the text is selected, not merely shown",/area\.select\(\)/.test(h),
+    "showing text is not the same as making it copyable");
+  ok("focused first",/area\.focus\(\)/.test(h),
+    "select() on an unfocused field is a no-op in Safari");
+  ok("and the range set explicitly",/setSelectionRange\(0,area\.value\.length\)/.test(h),
+    "iOS ignores select() on some fields");
+  ok("on the next frame",/requestAnimationFrame\(\(\)=>\{[\s\S]{0,80}area\.focus/.test(h),
+    "a textarea cannot be selected while it is still hidden");
+  ok("and the title says so",/already selected, just Copy/.test(h));
+
   ok("the panel opens whether or not the clipboard accepted",
     h.indexOf("openTextExport")>0&&!/return;\s*\}\s*$/.test(h.slice(0,h.indexOf("openTextExport"))),
     "the guaranteed path is always offered rather than kept as a fallback");
@@ -1626,8 +1764,10 @@ G("Copy details & log");
   ok("the clipboard result is described as unverifiable",
     /accepted \(unverifiable\)/.test(h),
     "saying so is better than pretending either way");
-  ok("the panel says what to do if the paste is empty",
-    /select the text here/.test(h));
+  /* The old message told you to select the text yourself. It does that now, so the
+     instruction is gone and the status just says to press Copy. */
+  ok("the panel says what to do",/press Copy/.test(h),
+    "one action, not four steps");
   ok("a refusal is logged",/clipboard unavailable|clipboard claim refused/.test(h),
     "so the next report shows why the last one was hard to get");
   /* The text is built once. It was two copies of the same twelve lines, one for each path,

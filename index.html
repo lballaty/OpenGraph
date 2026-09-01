@@ -612,6 +612,7 @@
     <div class="cell hi"><b>Length</b><span id="slen">—</span></div>
     <div class="cell hi"><b>Angle</b><span id="sang">—</span></div>
     <div class="cell"><b>Snap</b><span id="ssnap">grid</span></div>
+    <div class="cell" id="sradCell"><b>Radius</b><span id="srad">—</span></div>
     <div class="cell"><b>Area</b><span id="sarea">—</span></div>
     <div class="cell"><b>Perimeter</b><span id="sper">—</span></div>
     <div class="cell" id="sgridCell"><b>Grid ▾</b><span id="sgrid">—</span></div>
@@ -1240,7 +1241,55 @@ const COARSE=matchMedia("(pointer:coarse)").matches;
    the view reaches well over a kilometre, and the grid still decimates to a legible
    10m step at 10px there, so the sheet stays readable rather than merely reachable.
    The ceiling is unchanged: 4000 already resolves under a third of a millimetre. */
-const MIN_ZOOM=0.001, MAX_ZOOM=4000;
+/* Why there is a limit at all, since it was asked and the honest answer is short.
+
+   It protects three things, none of which needs a large number:
+     - toM divides by zoom, so it cannot be zero
+     - two fingers meeting in a pinch gives a ratio near zero, which would drive the zoom
+       to nothing in one gesture
+     - gridStep multiplies by ten until lines are four pixels apart, and needs a bound
+
+   And nothing else breaks as it falls: coordinates are Float64 and unchanged by zoom,
+   screen coordinates get SMALLER as you zoom out so precision improves rather than decays,
+   and the grid already says "too fine to draw" and stops.
+
+   The old 0.001 was not derived from any of that. I picked it, it allowed about 1.4 km
+   across a screen, and it was the clamp behind a report that zooming out simply stopped.
+   1e-7 gives roughly 13,600 km, which is past any conceivable drawing and still a long way
+   above zero. The limit is now a guard rail rather than a policy. */
+const MIN_ZOOM=1e-7, MAX_ZOOM=4000;
+/* A report of "I cannot zoom out past 10 m" that I could not reproduce: the wheel and pinch
+   paths both reach MIN_ZOOM here, and the scale bar label is correct at every step. So
+   either something on the device refuses that I cannot provoke, or the zoom is changing and
+   something else is not.
+
+   Rather than guess a fourth time, this says which. It fires once per session when a
+   gesture asks for a zoom outside the limits, and reports what was asked for, what was
+   allowed, and what the scale bar would then read -- so the next log settles it. */
+/* Said out loud, not just logged. Reaching a limit and having nothing happen is
+   indistinguishable from the app being broken -- which is exactly how it was reported, and
+   it took several exchanges to establish which of the two it was. A limit that announces
+   itself costs one line and removes that whole class of confusion.
+
+   Throttled to once every four seconds rather than once a session: someone who zooms out,
+   works, and zooms out again later deserves telling both times. */
+let zoomClampAt=0;
+function noteZoomClamp(want,how){
+  if(want>=MIN_ZOOM&&want<=MAX_ZOOM)return;
+  const tooFar=want<MIN_ZOOM;
+  if(Date.now()-zoomClampAt<4000)return;
+  zoomClampAt=Date.now();
+  note(tooFar
+    ? "That is as far out as it goes \u2014 the view is "+fmtBig(W/S.view.zoom)+" across."
+    : "That is as close in as it goes.");
+  const target=110/S.view.zoom/uf();
+  const pw=Math.pow(10,Math.floor(Math.log10(target)));
+  const n=[1,2,5,10].find(k=>k*pw>=target)||10;
+  logLine("zoom clamped by "+how+": asked for "+want.toExponential(2)+
+    ", limit is "+MIN_ZOOM+" to "+MAX_ZOOM+", now at "+S.view.zoom.toExponential(2)+
+    " \u2014 scale bar reads "+fmtBig(n*pw*uf())+", screen shows "+
+    fmtBig(W/S.view.zoom)+" across","warn");
+}
 const MEASURE_OFFSET_PX=22;   // default stand-off for a new dimension line, in screen px
 const DEFAULT_TEXT_MM=3.5;    // ISO 3098 lettering height; overridable per sheet
 /* A real font stack, not var(--mono). Canvas 2D does not resolve CSS custom
@@ -1510,12 +1559,22 @@ function fmtA(mm2){const u=U[S.unit],v=mm2/(u.f*u.f);
    Only for metric and imperial families where a larger unit exists. Pixels have none, so
    they are left alone. */
 const UP={mm:{to:"m",f:1000,at:1000},cm:{to:"m",f:100,at:100},in:{to:"ft",f:12,at:24}};
+/* The step after that, keyed on what UP produced. Only needed since the zoom floor was
+   lowered: a view thousands of kilometres wide read as "2000000 m". Miles for feet, since a
+   drawing in inches is not going to want kilometres. */
+const UP2={m:{to:"km",f:1000,at:1000},ft:{to:"mi",f:5280,at:5280}};
 function fmtBig(mm){
   const u=U[S.unit], v=mm/u.f, up=UP[S.unit];
   if(!up||Math.abs(v)<up.at)return fmt(mm)+" "+u.lbl;
-  const b=v/up.f;
+  let b=v/up.f, unit=up.to;
+  /* A SECOND step up. With the zoom floor lowered, the view can be thousands of kilometres
+     across, and the scale bar was reporting that as "2000000 m" -- technically right and
+     useless, which is the same fault the whole scaling formatter was written to fix.
+     One more step is enough: past a thousand kilometres nothing further is worth reading. */
+  const up2=UP2[unit];
+  if(up2&&Math.abs(b)>=up2.at){b=b/up2.f;unit=up2.to;}
   return (Math.abs(b)>=100?b.toFixed(0):b.toFixed(Math.abs(b)>=10?1:2))
-    .replace(/\.?0+$/,m=>m.includes(".")?"":m)+" "+up.to;
+    .replace(/\.?0+$/,m=>m.includes(".")?"":m)+" "+unit;
 }
 function fmtBigArea(mm2){
   const u=U[S.unit], v=mm2/(u.f*u.f), up=UP[S.unit];
@@ -4992,7 +5051,14 @@ function drawScaleBar(){
      the scaling formatter every other readout uses -- on a 120m site it read "20000 mm"
      where it meant 20 m. n*p is in display units, so it is converted to millimetres first,
      which is what fmtBig expects. */
-  g.fillText(fmtBig(n*p*uf()),x+len/2,y-8);g.restore();
+  /* The bar's own length, and beside it how much of the drawing is on screen. Reading the
+     bar as "how far can I see" is the natural mistake -- it is a ruler, not a span -- and it
+     cost several exchanges when a report of "stuck at 10 m" turned out to be a grid interval
+     at the zoom limit while the view was over a kilometre wide. */
+  g.fillText(fmtBig(n*p*uf()),x+len/2,y-8);
+  g.textAlign="right";g.fillStyle="#7b8b99";
+  g.fillText("view "+fmtBig(W/S.view.zoom)+" across",x+len,y+11);
+  g.restore();
 }
 function updateStatus(){
   /* The history figure in Settings is live: it changes with every action, and a stale one
@@ -5039,6 +5105,47 @@ function updateStatus(){
     if(c.t&&isClosed(c)){ar+=areaOf(c);anyClosed=true;}
     if(c.t&&!isMeasureLike(c))pe+=perimOf(c);
   }
+  /* Radius and diameter, which are what anyone asks of a circle and which the bar never
+     said -- it offered area and perimeter, neither of which is the number you want when
+     drawing a hole or a turning circle.
+
+     Both are shown because both get used: a radius to set out from a centre, a diameter to
+     order a pipe or check a bore. Converting between them in your head while reading a
+     screen is exactly the sort of small friction that makes a tool tiresome. */
+  const arcs=[];
+  for(const o of S.sel) for(const{o:c}of flattenAll([o]))
+    if(c.t==="circle"||c.t==="arc")arcs.push(c);
+  /* Hidden when nothing round is selected, unlike Area and Perimeter which sit at "—".
+     Deliberately inconsistent: the status bar scrolls horizontally, and a report this
+     session was that a scrolling bar put a button out of reach. A cell that is meaningless
+     most of the time should not push the useful ones off the end.
+
+     Area and Perimeter are not changed to match, because they are long-standing and someone
+     may be reading their position; a cell that comes and goes is a smaller surprise than
+     two that start doing so. */
+  const radCell=$("sradCell");
+  if(!arcs.length){
+    $("srad").textContent="—";
+    if(radCell)radCell.style.display="none";
+  }else{
+    if(radCell)radCell.style.display="";
+    const rs=arcs.map(c=>c.r);
+    const same=rs.every(r=>Math.abs(r-rs[0])<1e-6);
+    if(!same){
+      /* Mixed radii: a single figure would be a lie, and the smallest and largest are what
+         tell you whether you meant to select them together. */
+      $("srad").textContent=arcs.length+" circles, "+fmtBig(Math.min(...rs))+
+        " to "+fmtBig(Math.max(...rs));
+    }else{
+      let t="R "+fmtBig(rs[0])+"  \u00d8 "+fmtBig(rs[0]*2);
+      /* An arc also has an included angle, which is the third thing you need and the one
+         you cannot work out from the other two. */
+      const only=arcs.length===1?arcs[0]:null;
+      if(only&&only.t==="arc")t+="  "+(Math.abs(only.sw)*180/Math.PI).toFixed(1)+"\u00b0";
+      else if(arcs.length>1)t+="  \u00d7"+arcs.length;
+      $("srad").textContent=t;
+    }
+  }
   $("sarea").textContent=anyClosed?fmtBigArea(ar):"—";
   $("sper").textContent=pe?fmtBig(pe):"—";
   // Show the drawn step alongside the sheet interval whenever they differ, so a
@@ -5054,9 +5161,14 @@ function updateStatus(){
   const dsx=gridStep(gxmm(),S.view.zoom);
   const setTxt=fmtBig(gxmm())+(Math.abs(gxmm()-gymm())>1e-9?" \u00d7 "+fmtBig(gymm()):"");
   const decimated=dsx&&Math.abs(dsx-gxmm())>1e-9;
+  /* The span across the screen, always. A report of "I cannot zoom out past 10 m" took
+     several exchanges to pin down because nothing said what the view actually covered --
+     the scale bar gives a round number chosen for the bar's own length, not the width of
+     the window, so it can look stuck while the zoom moves. This is the direct figure. */
   $("sgrid").textContent=setTxt+
     (!dsx?"  \u00b7  view interval: too fine to draw"
-     :decimated?"  \u00b7  view interval "+fmtBig(dsx):"");
+     :decimated?"  \u00b7  view interval "+fmtBig(dsx):"")+
+    "  \u00b7  view "+fmtBig(W/S.view.zoom)+" across";
   $("sgridCell").title=decimated
     ? "Grid interval "+setTxt+". At this zoom those lines would be less than four pixels "+
       "apart, so the view interval \u2014 what is actually drawn \u2014 is "+fmtBig(dsx)+
@@ -6657,7 +6769,9 @@ function updatePinch(){
   const c={x:(a[0].x+a[1].x)/2,y:(a[0].y+a[1].y)/2};
   const r=cv.getBoundingClientRect();
   const before=toM({x:pinch.c.x-r.left,y:pinch.c.y-r.top});
-  S.view.zoom=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,pinch.zoom*(d/pinch.d)));
+  const wantPinch=pinch.zoom*(d/pinch.d);
+  S.view.zoom=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,wantPinch));
+  noteZoomClamp(wantPinch,"pinch");
   const after=toM({x:c.x-r.left,y:c.y-r.top});
   S.view.cx+=before.x-after.x;S.view.cy+=before.y-after.y;
   pinch.c=c;pinch.d=d;pinch.zoom=S.view.zoom;requestDraw();   // same reason: a pinch fires faster than the screen refreshes
@@ -6667,7 +6781,9 @@ cv.addEventListener("wheel",e=>{
   const sp=rel(e);
   if(e.ctrlKey||e.metaKey||!S.scrollPan){
     const before=toM(sp);
-    S.view.zoom=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,S.view.zoom*Math.exp(-e.deltaY*0.0016)));
+    const wantWheel=S.view.zoom*Math.exp(-e.deltaY*0.0016);
+  S.view.zoom=Math.max(MIN_ZOOM,Math.min(MAX_ZOOM,wantWheel));
+  noteZoomClamp(wantWheel,"wheel");
     const after=toM(sp);
     S.view.cx+=before.x-after.x;S.view.cy+=before.y-after.y;
   }else{
@@ -7722,8 +7838,8 @@ const LIB_PREFIX="dg:lib:";   // one key per named library, so sets stay separab
    you have to remember -- and several builds shipped on the same date anyway, so neither
    answered "which copy am I looking at". A content hash cannot drift: two files showing
    the same one ARE the same file. */
-const APP_NAME="Drafting Grid", APP_VERSION="3.48.1", APP_BUILD="2026-08-29";
-const APP_HASH="f4d7ecda";
+const APP_NAME="Drafting Grid", APP_VERSION="3.52.0", APP_BUILD="2026-08-29";
+const APP_HASH="8dea5d94";
 const AUTO_KEY="dg:auto";
 const APP_DOC="drafting-grid";
 const LAYER_APP="drafting-grid-layer";   // one layer and its contents, as a file
@@ -10778,6 +10894,7 @@ const HOWTO=[
  {t:"Why has autosave stopped",i:"autosave-limit",k:"autosave stopped not saving too large standing down storage full limit",w:"A drawing over 1.5MB is too large for autosave — save to a file instead. Settings → Autosave says so",c:"save"},
  {t:"The app is open in several tabs",i:"several-tabs",k:"tabs tab two several many shared storage last save wins conflict overwrite",w:"They share one storage, so the last to save wins. Close the others, or keep to one tab",c:null},
  {t:"Bring something in front of or behind",i:"order-depth",k:"front back forward backward depth order stack on top underneath behind hidden covered",w:"Select it, then To front or To back on the bottom bar",c:"front"},
+ {t:"See the radius or diameter of a circle",i:"circle-size",k:"radius diameter circle arc round hole bore size how big width across r d dia ø sweep angle",w:"Select it — the Radius cell in the bottom bar shows R and Ø, and the included angle for an arc",c:null},
  {t:"Repeat something at a spacing",i:"array-repeat",k:"array repeat rows and columns row column grid pattern duplicate many copies several spacing evenly spaced fence posts desks rungs studs tiles paving series line of",w:"Select it, then Array on the bottom bar",c:"array"},
  {t:"Offset — make a parallel copy at a set distance",i:"offset-parallel",k:"offset parallel copy alongside inset outset clearance second face wall thickness margin duplicate",w:"Select it, then tap the Offset button on the Edit bar",c:"offset"},
  {t:"Offset refused, or nothing happened",i:"offset-limits",k:"offset parallel copy wont work does not work refused nothing happened group text curve arc dimension",w:"Offset works on lines, polylines, rectangles, circles and arcs. Ungroup a group first; turn a curve off in Style first",c:"offset"},
@@ -11236,7 +11353,16 @@ function resetBarOrder(){
    3.45.1 fixed the flex bug that let the list scroll away, and pinning is the belt to that
    braces: even if a future layout change makes the list scroll again, the way out will not
    be inside it. */
-const PINNED={1:["select"],2:["undo","settings","keys"]};
+/* Select all joins the pinned set. It was on bar 2 behind Cmd+A -- and an iPad has no Cmd
+   key, so the button was the only route and it lived inside a list that scrolls.
+
+   That is the third report of the same shape: Select, the top button of a floating bar, and
+   now this. The pattern is clear enough to state as a rule -- a command that is the only way
+   to reach a state must not live in a scrolling list. Select, Select all and Undo are all
+   recovery actions in that sense: without them you cannot get out of where you are.
+
+   Four on bar 2 is wide, and worth it. Nothing else is being added. */
+const PINNED={1:["select"],2:["selall","undo","settings","keys"]};
 function buildBars(){
   [1,2].forEach(n=>{
     const items=document.querySelector("#bar"+n+" .items");items.innerHTML="";
@@ -12208,11 +12334,30 @@ $("aboutCopy").onclick=async()=>{
     catch(err){logLine("clipboard unavailable: "+((err&&err.message)||err),"warn");}
   }
   openTextExport("drawing");
-  $("textIOArea").value=txt;
-  $("textIOTitle").textContent="App details \u2014 select all and copy";
+  const area=$("textIOArea");
+  area.value=txt;
+  /* Selected, not merely shown. The panel opened with the text in it and nothing selected,
+     so copying meant tapping in, long-pressing, Select All, then Copy -- four steps on a
+     tablet, and missing any of them yields an empty paste. Which is exactly the symptom
+     that has now happened eight times.
+
+     rAF because the panel is being displayed in this same frame and a textarea cannot be
+     selected while it is hidden. focus() first, since select() on an unfocused field is a
+     no-op in Safari, and setSelectionRange as well because iOS ignores select() on a field
+     it considers read-only-ish. Belt and braces on a path whose whole purpose is getting
+     text out of the app. */
+  requestAnimationFrame(()=>{
+    try{
+      area.focus();
+      area.select();
+      area.setSelectionRange(0,area.value.length);
+    }catch(err){logLine("could not select the details text: "+((err&&err.message)||err),"warn");}
+  });
+  $("textIOTitle").textContent="App details \u2014 already selected, just Copy";
   $("textIOStatus").textContent=accepted
-    ? "Also sent to the clipboard. If the paste comes out empty, select the text here instead."
-    : "The clipboard refused. Select the text here and copy it by hand.";
+    ? "The text below is selected \u2014 press Copy. It has also gone to the clipboard, but that "+
+      "cannot be verified from here."
+    : "The text below is selected \u2014 press Copy.";
   logLine("copy details: clipboard "+(accepted?"accepted (unverifiable)":"refused")+
     ", panel opened","warn");
   return;
@@ -12626,12 +12771,36 @@ function openQuick(x,y){
   box.innerHTML="";
   const h=document.createElement("div");h.className="qhead";h.textContent="Most used";
   box.appendChild(h);
-  quickCandidates().forEach(k=>{
+  const add=k=>{
     const b=document.createElement("button");
     b.textContent=(ICONS[k]?ICONS[k]+"   ":"")+CMD[k].lbl;
     b.onclick=()=>{closeQuick();CMD[k].run();};
     box.appendChild(b);
-  });
+  };
+  const shown=quickCandidates();
+  shown.forEach(add);
+  /* A fixed section for the commands that are the only way out of a state. Pinning them on
+     the toolbars helps, but a long press on the canvas is the stronger guarantee: it is
+     reachable wherever you are, and a gesture cannot scroll away, be collapsed, or be
+     hidden by a floating panel.
+
+     Three reports in one session were all this shape -- Select unreachable, the top button
+     of a floating bar unreachable, and no way to Select all. The rule worth holding is that
+     recovery must not depend on the toolbars being in a good state.
+
+     Only those not already listed above, so the menu does not repeat itself. */
+  const ALWAYS=["select","selall","undo"];
+  /* A Set, not includes() inside a filter. Three items against five is trivially small and
+     the sweep is right to refuse it anyway: the pattern is what gets copied into a place
+     where it is not small, which is how eleven of them accumulated. Third time today I have
+     written it and been caught. */
+  const shownSet=new Set(shown);
+  const missing=ALWAYS.filter(k=>CMD[k]&&!shownSet.has(k)&&!isHidden(k));
+  if(missing.length){
+    const h2=document.createElement("div");h2.className="qhead";h2.textContent="Always here";
+    box.appendChild(h2);
+    missing.forEach(add);
+  }
   box.classList.add("open");
   // Kept inside the sheet, like every other floating thing.
   const r=box.getBoundingClientRect(), sb=stageBox();

@@ -4,6 +4,205 @@ The **This build** line in Settings → About is a hash of the file's own conten
 Two copies showing the same one are the same file. Use it to tell builds apart —
 the version number alone will not, since several ship on the same date.
 
+## 3.52.0 — 2026-09-01 · build `8dea5d94`
+
+### Select all had no route on a tablet
+It sat on the Edit bar behind **Cmd+A** — and an iPad has no Cmd key, so the button was
+the only way, and it lived inside a list that scrolls.
+
+Pinned now, beside Undo, Settings and the guide.
+
+### And the long press always offers the way out
+Three reports in one session were the same shape: **Select** unreachable, the top
+button of a floating bar unreachable, and now **Select all**. The rule worth stating is
+that a command which is the only way *out* of a state must not depend on the toolbars
+being in a good condition.
+
+Pinning helps. A long press on empty canvas is stronger: it is reachable wherever you
+are, and a gesture cannot scroll away, be collapsed, or be hidden behind a floating
+panel. The quick menu now ends with an **Always here** section carrying Select, Select
+all and Undo — omitting any already listed above it, and honouring a command someone
+has deliberately hidden.
+
+### Caught by my own sweep, again
+The new code used `includes()` inside a `filter` — three items against five, so
+trivially small. The sweep refused it anyway, and it is right to: the pattern is what
+gets copied somewhere it is not small, which is how eleven of them accumulated in the
+first place. **Third time today** I have written it and been caught.
+
+840 tests.
+
+## 3.51.0 — 2026-09-01 · build `181289b2`
+
+### Why there is a zoom limit, and why it was the wrong size
+Asked directly, and the honest answer is short. It protects three things:
+
+- `toM` divides by the zoom, so it cannot be zero
+- two fingers meeting in a pinch give a ratio near zero, which would drive the zoom to
+  nothing in a single gesture
+- `gridStep` multiplies by ten until lines are four pixels apart, and needs a bound
+
+**None of those needs a large number.** And nothing else degrades as the zoom falls:
+coordinates are Float64 and unchanged by zoom, screen coordinates get *smaller* as you
+zoom out so precision improves rather than decays, and the grid already says "too fine
+to draw" and stops.
+
+The old 0.001 was not derived from any of that. I picked it, it allowed about 1.4 km
+across a screen, and it was the clamp behind the report.
+
+Now **1e-7** — roughly **13,660 km**. A guard rail rather than a policy.
+
+### And it says so when you reach it
+> *"That is as far out as it goes — the view is 13,660 km across."*
+
+Reaching a limit and having nothing happen is indistinguishable from the app being
+broken, which is precisely how it was reported and took several exchanges to tell
+apart. Throttled to once every four seconds rather than once a session: someone who
+zooms out, works, and zooms out again deserves telling both times.
+
+### Kilometres
+With the floor lowered, the scale bar was reporting a view as **"2000000 m"** —
+technically right and useless, which is the fault the scaling formatter was written to
+fix in the first place. Metres now step up to kilometres past a thousand, and feet to
+miles, since a drawing in inches will not want kilometres.
+
+835 tests.
+
+## 3.50.0 — 2026-09-01 · build `ffa6168b`
+
+### You can zoom out fifty times further
+`MIN_ZOOM` was 0.001 — about **1.4 km** across a 1366px screen. That sounded generous
+and was the clamp being hit: zoom out, and it simply stops with nothing changing size,
+which is exactly what reaching a limit looks like.
+
+Now **0.00002**, about **68 km**. Nothing pays for it: the grid already refuses to draw
+when its lines fall under four pixels apart and says *"too fine to draw"*, the
+decimation guard allows fifteen decades, and coordinates stay Float64 throughout.
+
+The limit exists to stop a runaway pinch, not to police how far out anyone may look.
+
+### The scale bar now says how wide the view is
+Reading the bar as *"how far can I see"* is the natural mistake — it is a **ruler**,
+not a span. Underneath it now:
+
+```
+├──────────┤
+   200 m
+              view 1366 m across
+```
+
+Those are different questions and the app was only answering one of them.
+
+### What actually happened here
+The report was *"cannot zoom out past 10 m"*. The 10 m was the **grid interval** — the
+spacing being drawn, which decimates in powers of ten and lands on exactly 10 m at the
+old limit and cannot step again. The view at that point was over a kilometre wide.
+
+I spent four exchanges looking for a clamp at 10 m, wrote two diagnostics, and never
+asked the one question that would have settled it: *what is the number, and what is it
+measuring?* Three figures in that cell mean three different things, and I added the
+third specifically to tell them apart, then asked you to read "the Grid cell" without
+saying which part.
+
+827 tests.
+
+## 3.49.2 — 2026-09-01 · build `2c78f3d2`
+
+### The details panel now selects its own text
+You were right to suspect the copy. The text was being produced correctly — 1,279
+characters, panel open, log included — but **nothing selected it**. Copying meant
+tapping into the field, long-pressing, Select All, then Copy: four steps on a tablet,
+and missing any one of them yields an empty paste.
+
+Eight empty attachments in a row is exactly what that looks like from the other end,
+and I spent them blaming the transfer rather than testing the path I had rewritten
+twice the same day.
+
+Now focused and fully selected on open, so it is one press of Copy. `focus()` first,
+because `select()` on an unfocused field is a no-op in Safari; `setSelectionRange` as
+well, because iOS ignores `select()` on some fields. Belt and braces on a path whose
+entire purpose is getting text out of the app.
+
+The title reads *"App details — already selected, just Copy"* rather than *"select all
+and copy"*, which was instructing you to do the work the app should have done.
+
+One test then failed against correct code: it asserted the old status message telling
+you to select the text yourself. That instruction is gone, because the app does it.
+
+824 tests.
+
+## 3.49.1 — 2026-09-01 · build `b89ea000`
+
+### "Cannot zoom out past 10 m" — not reproduced, so instrumented instead
+I could not make this happen. On the current build, driven headlessly:
+
+| | |
+|---|---|
+| wheel zoom out | 5.0 → 0.001, reaching **1,180 m across** |
+| pinch zoom out | 5.0 → 0.001, the same |
+| `MIN_ZOOM` | 0.001 — over a kilometre on your screen |
+| scale bar label | progresses correctly: 2 m, 5 m, 20 m, 50 m, **200 m** |
+
+`dimGeom`, `gridStep`, the step floor and the scale bar formula are all correct at
+that zoom, and there are only four writers of the zoom value — two gestures and Fit,
+all clamped to the same wide limits.
+
+So rather than guess a fourth time, the app now says which of two things is
+happening:
+
+- **A clamped gesture reports itself**, once per session: what was asked for, what was
+  allowed, where it ended up, and what the scale bar would then read.
+- **The Grid cell states the view span directly** — `view 124 m across`. The scale bar
+  shows a round number chosen for the *bar's* length, not the width of the window, so
+  it can look stuck while the zoom is moving. This figure cannot.
+
+If the span figure also sticks, the zoom is genuinely clamped and the log will say by
+what. If it keeps rising while the scale bar sits at 10 m, the fault is in the bar and
+not the zoom.
+
+### A note on my own harness
+Chasing this, the harness reported the scale bar being drawn at `y = −23`, which I
+briefly took for a real fault. jsdom gives elements zero size, so `H` was 1. Worth
+recording: **the harness can produce symptoms the app does not have**, and a
+measurement from it needs the same scepticism as any other.
+
+819 tests.
+
+## 3.49.0 — 2026-09-01 · build `012250cb`
+
+### Radius and diameter of a circle or arc
+The status bar offered **Area** and **Perimeter** for a circle — neither of which is
+the number anyone wants when drawing a hole or a turning circle. Select one and the
+Radius cell now reads:
+
+```
+R 250 mm  Ø 500 mm            a circle
+R 250 mm  Ø 500 mm  90.0°     an arc, with its included angle
+R 6 mm  Ø 12 mm  ×4           four equal holes
+3 circles, 6 mm to 250 mm     mixed radii
+```
+
+**Both** figures, because both get used: a radius to set out from a centre, a diameter
+to order a pipe or check a bore. Converting between them in your head while reading a
+screen is the sort of small friction that makes a tool tiresome.
+
+An arc also shows its **included angle** — the third thing you need, and the only one
+you cannot work out from the other two. Mixed radii show the range rather than a single
+figure, which would be a lie. It looks inside groups, and scales units like every other
+readout, so a 3m turning circle does not read 3000 mm.
+
+### One deliberate inconsistency
+The cell **hides** when nothing round is selected, where Area and Perimeter sit at "—".
+The status bar scrolls horizontally, and a report this session was that a scrolling bar
+put a button out of reach — a cell that is meaningless most of the time should not push
+the useful ones off the end.
+
+Area and Perimeter are not changed to match: they are long-standing and someone may be
+reading their position, and one cell that comes and goes is a smaller surprise than two
+that start doing so.
+
+809 tests.
+
 ## 3.48.1 — 2026-09-01 · build `f4d7ecda`
 
 ### A dimension label vanished on zooming in
