@@ -4,6 +4,98 @@ The **This build** line in Settings → About is a hash of the file's own conten
 Two copies showing the same one are the same file. Use it to tell builds apart —
 the version number alone will not, since several ship on the same date.
 
+## 3.42.0 — 2026-09-01 · build `508fd64c`
+
+### The overlay was 16ms a frame with a large selection
+```
+overlay   32ms ×2  (16.00ms each)
+```
+
+Normally 0.06ms. **Two hundred times** — and the overlay is drawn fresh on every
+frame, so it is the one cost no cache can skip. This is the large-group drag reported
+earlier: not the geometry, the handles.
+
+One handle per **vertex**, with no limit. A selection of 40,521 nodes drew 40,521
+handles, which works out at almost exactly the 16ms measured.
+
+Capped at **600**. Past that the selection outline does the job instead, and nothing
+real is lost: on a polyline of 2,000 vertices at any ordinary zoom most handles sit on
+top of one another, and you cannot grab one you cannot tell from its neighbour. So
+they were unusable *and* expensive. Said once when it happens.
+
+### SVG export: 27ms
+That question is closed — it had never been timed at any size. But the same log shows
+**"DXF export: 2,906,183 bytes"** with no timing at all, because I wrapped `svgOut`
+and not `dxfOut`. Now timed.
+
+### The third helper I invented today
+I referenced `drawSelOutline` as though it existed. It did not — after `selectionBBox`
+and `updateUndoRedo`. A name that *sounds* like it should exist is not evidence that it
+does, and the only reason all three surfaced immediately is that the execution harness
+runs on every release.
+
+Written properly: it unions the selection's bounding boxes and survives an object whose
+extent cannot be computed.
+
+### And a test that read a character window
+The lock-check assertion matched 800 characters from the function's name, and a comment
+pushed the check past it. Reading the function body instead — the brittleness `codeOf()`
+exists to avoid, in an assertion written before it was available there.
+
+700 tests.
+
+## 3.41.0 — 2026-09-01 · build `21c1351b`
+
+### Viewport culling, which I had closed
+```
+entities off screen  73%  (1,619,223 of 2,207,550)  → culling would pay
+```
+
+I closed this item on an earlier reading of **0%**, noting in the tracker that it was
+"useless HERE, not wrong in principle". A run at a closer zoom says 73%. Both
+readings were true — the difference was the zoom, and the diagnostic found the case
+rather than my guessing when it would arrive.
+
+Built now, shared by all four loops that walk the drawing. Two deliberate choices:
+
+- An object whose extent **cannot** be computed is **drawn**, not guessed away. A
+  missing object is a far worse fault than a wasted draw call.
+- The margin is **120 pixels**, because strokes, labels and selection haloes are
+  painted outside an object's geometric box, and clipping one at the screen edge is a
+  visible bug traded for an invisible saving.
+
+### The hit test finally uses the index
+2.97ms per call, second only to snapping, and the last per-interaction path still
+walking every entity while the snap paths had used the index since 3.33.0. Narrowed
+now — with a pass for the types the index cannot hold, and each entity tested once,
+since many segments belong to one polyline.
+
+### Intersection snapping stopped switching itself off
+```
+intersection snapping stood down: 24399 segments crowded near the pointer
+```
+
+Two faults. The search box was **three times the snap tolerance — nine times the
+area** — for no gain, since a crossing worth snapping to is within the ordinary snap
+distance. And exceeding the cap **refused** rather than trimmed, so the feature
+switched off exactly where crossings are most useful.
+
+It now keeps the **nearest 400**. The crossing anyone wants is under the pointer, so
+the closest segments are the right ones, and the answer is identical in every case a
+person could tell apart.
+
+### Confirmed working
+`flatten rebuild 0.13ms ×8` — the cache from 3.40.0 removed that cost entirely.
+Storage warned at **57%**, as intended. Snapping down to 1.86ms from 2.59ms.
+
+### A fault that nearly went in silently
+My trim sorted by `projOnSeg(...).d2` — and `projOnSeg` returns `{p,t}` with **no
+distance at all**. Every sort key would have been `undefined`, leaving the order
+untouched, so the "nearest 400" would have been an arbitrary 400 and the feature would
+have looked like it worked. The distance is computed explicitly.
+
+690 tests.
+
 ## 3.40.0 — 2026-09-01 · build `60226e97`
 
 ### Decimation: the answer was no

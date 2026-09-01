@@ -1548,7 +1548,7 @@ function chainOf(e){
 let geomVersion=0,segCache=null,segCacheVer=-1,segCacheAll=null,segCacheAllVer=-1;
 function segsDirty(){geomVersion++;}
 // Reset on load: a new drawing deserves its own verdict, and its own message if it needs one.
-function resetInterWarn(){interSnapWarned=false;}
+function resetInterWarn(){interSnapTrimmed=false;}   // a new drawing deserves its own note
 function segments(all){
   const cached=all?(segCacheAllVer===geomVersion&&segCacheAll)
                   :(segCacheVer===geomVersion&&segCache);
@@ -3186,19 +3186,42 @@ function snapPointInner(sp,ignore){
        narrowed set rather than the whole drawing. That turns 8.07 billion pairs at 127,000
        segments into a few dozen -- and the cap can rise from 800 to a size that no longer
        stands the feature down on any realistic drawing. */
-    const near=segsNear(raw,tol*3,false);
-    if(near.length<=INTER_SNAP_MAX){
+    /* tol, not tol*3. A device report showed 24,399 segments in the clamped box on a dense
+       drawing, so intersection snapping stood down anyway -- my clamp bounds the BOX, not
+       the number of segments that come back, and tripling the tolerance made the box nine
+       times the area it needed to be. A crossing worth snapping to is within the ordinary
+       snap distance, so the wider search bought nothing and cost the feature. */
+    let near=segsNear(raw,tol,false);
+    /* Trimmed to the NEAREST few hundred rather than stood down. Refusing was the wrong
+       answer: a report showed 24,399 segments in range on a dense drawing, so the feature
+       switched itself off exactly where crossings are most useful. The crossing anyone wants
+       is under the pointer, so the closest segments are the right ones to keep -- and
+       keeping the closest 400 gives the same answer as pairing all 24,399 in every case a
+       person could tell apart.
+
+       Sorted by distance to the pointer, which is one pass over a list already narrowed
+       from 39,521 to a few thousand. */
+    if(near.length>INTER_SNAP_MAX){
+      /* Distance computed here rather than read from projOnSeg, which returns {p,t} and no
+         distance at all -- reading a .d2 that does not exist would have made every key
+         undefined and left the order untouched, so the "nearest" 400 would have been an
+         arbitrary 400. Squared distance, since only the ordering matters. */
+      const withD=near.map(g=>{
+        const q=projOnSeg(raw,g.a,g.b).p;
+        const dx=q.x-raw.x, dy=q.y-raw.y;
+        return{g,d:dx*dx+dy*dy};
+      });
+      withD.sort((a,b)=>a.d-b.d);
+      near=withD.slice(0,INTER_SNAP_MAX).map(x=>x.g);
+      if(!interSnapTrimmed){
+        interSnapTrimmed=true;
+        logLine("intersection snapping limited to the "+INTER_SNAP_MAX+
+          " nearest segments at this spot","info");
+      }
+    }
+    {
       for(let i=0;i<near.length;i++)for(let j=i+1;j<near.length;j++){
         const p=segInt(near[i].a,near[i].b,near[j].a,near[j].b); if(p)add(p,3,"inter","intersection");}
-    }else if(!interSnapWarned){
-      interSnapWarned=true;
-      /* The NEAR count, not the whole drawing: the message said "1,100 segments" on a
-         drawing of 19,250 because it was reporting the wrong number even before the index.
-         What matters is how many are crowded around the pointer. */
-      const cnt=near.length;
-      logLine("intersection snapping stood down: "+cnt+" segments crowded near the pointer","warn");
-      note("Intersection snapping is off here \u2014 too many lines are crowded together at this "+
-        "spot. Zoom in, and every other kind of snapping still works.");
     }
   }
   /* Near RAW, not near the anchor: the candidate is the foot of the perpendicular, and it
@@ -3538,6 +3561,7 @@ defIntent("inspect",{},()=>({
 /* Applied here, after every definition exists. Names are what a person would recognise in
    a log, not the function names. */
 svgOut=timeOnce("SVG export",svgOut);
+dxfOut=timeOnce("DXF export",dxfOut);
 doc=timeOnce("building the document",doc);
 loadDoc=timeOnce("opening the drawing",loadDoc);
 
@@ -4027,6 +4051,22 @@ function measureDecimation(){
   MEAS.ptsDistinct+=seen.size;
   MEAS.decimFrames++;
 }
+/* One test, built once per paint and shared by every loop in it. Four loops walk the
+   drawing -- geometry, dimensions, object labels, dimension labels -- and computing the
+   viewport arithmetic in each would be four copies to keep in step. */
+function makeCullTest(){
+  const vlo=toM({x:0,y:H}), vhi=toM({x:W,y:0});
+  const pad=CULL_PAD_PX/S.view.zoom;
+  const x0=vlo.x-pad, x1=vhi.x+pad, y0=vlo.y-pad, y1=vhi.y+pad;
+  return o=>{
+    const b=objBBox(o);
+    /* No box means an extent that cannot be computed. Drawn rather than skipped: guessing
+       it is off screen would make it disappear, and a missing object is a far worse fault
+       than a wasted draw call. */
+    if(!b)return true;
+    return !(b.mxx<x0||b.mnx>x1||b.mxy<y0||b.mny>y1);
+  };
+}
 function paintStatic(g){
   measureDecimation();
   /* Culling potential, counted rather than assumed. If nothing is ever off screen, culling
@@ -4046,14 +4086,26 @@ function paintStatic(g){
   g.clearRect(0,0,W,H);g.fillStyle="#fbfaf6";g.fillRect(0,0,W,H);
   if(S.showGrid)drawGrid(g,W,H);
   drawSheet(g);   // behind the drawing: it is the paper, not part of the work
-  for(const e of S.entities) if(visible(e)) drawEntity(g,e,S.sel.includes(e));
+  /* Off-screen entities are skipped. I closed this item on a measurement of 0% and wrote
+     that it was "useless HERE, not wrong in principle" -- and a later run at a closer zoom
+     reported 73% off screen with the verdict "culling would pay". Both readings were true;
+     the difference was the zoom, and the diagnostic found the case rather than my guessing
+     when it would arrive.
+ 
+     The margin is generous on purpose. A bounding box is the extent of an object's
+     GEOMETRY, and what gets painted can exceed it -- a thick stroke, a label sitting
+     outside the shape, a selection halo. Culling on the exact box would clip those at the
+     edge of the screen, which is a visible bug in exchange for an invisible saving. */
+  const onScreen=makeCullTest();
+  for(const e of S.entities)
+    if(visible(e)&&onScreen(e)) drawEntity(g,e,S.sel.includes(e));
   if(!S.hideMeasures)
-    for(const m of S.measures) if(visible(m)) drawMeasure(g,m,S.sel.includes(m));
+    for(const m of S.measures) if(visible(m)&&onScreen(m)) drawMeasure(g,m,S.sel.includes(m));
   // Hidden for a clean canvas without touching the labels themselves, so turning them
   // back on restores exactly what was there.
   if(!S.hideLabels)
-    for(const e of S.entities) if(visible(e)) drawObjLabel(g,e,S.sel.includes(e));
-  for(const m of S.measures) if(visible(m)) drawObjLabel(g,m,S.sel.includes(m));
+    for(const e of S.entities) if(visible(e)&&onScreen(e)) drawObjLabel(g,e,S.sel.includes(e));
+  for(const m of S.measures) if(visible(m)&&onScreen(m)) drawObjLabel(g,m,S.sel.includes(m));
   if(S.showArea) drawAreaLabels(g);
 }
 function draw(){
@@ -4196,11 +4248,20 @@ const SKETCH_STEP_PX=1/Math.min(window.devicePixelRatio||1,2.5);
    now it bounds only what is crowded around the pointer, so no realistic drawing stands the
    feature down. */
 const INTER_SNAP_MAX=400;
-let interSnapWarned=false;
+/* interSnapWarned is gone: intersection snapping no longer stands down, so there is nothing
+   to warn about. interSnapTrimmed records the once-per-session note that it is working on
+   the nearest few hundred segments rather than all of them. */
+let interSnapTrimmed=false;
 /* Far enough to be plainly a separate object, near enough to be obviously related. */
 const PASTE_OFFSET_PX=14;
 /* One pixel: below this a move is invisible, whatever the drawing scale. */
 const MIN_STEP_PX=1;
+/* Generous: strokes, labels and haloes are painted outside an object's geometric box, and
+   clipping one at the screen edge is a visible bug traded for an invisible saving. */
+/* 600 handles is about 0.25ms and far more than anyone can distinguish on screen. */
+const HANDLE_MAX=600;
+let handleCapNoted=false;
+const CULL_PAD_PX=120;
 const GRID_MIN_PX=4;   // the app's existing legibility threshold -- decimation is the only change
 function gridStep(base,zoom){
   if(!(base>0)||!isFinite(base)||!(zoom>0)||!isFinite(zoom))return null;
@@ -4578,8 +4639,45 @@ function handlesOf(o){
     h.push({p:{x:o.c.x+o.r*Math.cos(midAngle),y:o.c.y+o.r*Math.sin(midAngle)},k:"ar",round:true});}
   return h;
 }
+/* The selection outline, used when handles are capped. Written rather than assumed: I
+   referenced drawSelOutline as though it existed, which is the third helper I have invented
+   from thin air today -- after selectionBBox and updateUndoRedo. The pattern is that a name
+   which SOUNDS like it should exist is not evidence that it does. */
+function drawSelOutline(){
+  const sel=S.sel.filter(o=>canSelect(o));
+  if(!sel.length)return;
+  let mnx=Infinity,mny=Infinity,mxx=-Infinity,mxy=-Infinity;
+  sel.forEach(o=>{const b=objBBox(o);if(!b)return;
+    mnx=Math.min(mnx,b.mnx);mny=Math.min(mny,b.mny);
+    mxx=Math.max(mxx,b.mxx);mxy=Math.max(mxy,b.mxy);});
+  if(!isFinite(mnx))return;
+  const p1=toS({x:mnx,y:mxy}), p2=toS({x:mxx,y:mny});
+  const g=ctx;g.save();
+  g.setLineDash([6,4]);g.strokeStyle="#2f6fed";g.lineWidth=1.6;
+  g.strokeRect(p1.x-6,p1.y-6,(p2.x-p1.x)+12,(p2.y-p1.y)+12);
+  g.restore();
+}
 function drawHandles(){
   if(S.tool!=="select"||drag&&drag.mode==="move")return;
+  /* Capped. A device report measured the overlay at 16.00ms per frame where it is normally
+     0.06 -- 200 times -- and the overlay is drawn FRESH every frame, so it is the one cost
+     no cache can skip. The reason was one handle per VERTEX with no limit: a selection of
+     40,521 nodes drew 40,521 handles, which works out at almost exactly the 16ms measured.
+
+     Capping costs nothing real, because handles beyond a few hundred are not usable
+     anyway: on a polyline of 2,000 vertices at any ordinary zoom most handles sit on top
+     of one another, and you cannot grab one you cannot tell from its neighbour. So past the
+     cap they are dropped and the selection outline carries the job of showing what is
+     selected -- which it already does for groups. */
+  const total=S.sel.reduce((n,o)=>n+(canSelect(o)&&!o.lock?handlesOf(o).length:0),0);
+  const tooMany=total>HANDLE_MAX;
+  if(tooMany&&!handleCapNoted){
+    handleCapNoted=true;
+    logLine("handles hidden: "+total+" would be drawn, over the "+HANDLE_MAX+" limit","info");
+    note("Too many points selected to show handles \u2014 the outline shows what is selected. "+
+      "Select fewer objects to edit individual points.");
+  }
+  if(tooMany){drawSelOutline();return;}
   const g=ctx;g.save();
   for(const o of S.sel){
     /* No handles on a locked object. Drawing them invites a drag that is then refused,
@@ -4880,9 +4978,40 @@ function hitAtInner(p){
   const tol=(COARSE?22:11)/S.view.zoom;
   let best=null,bd=tol;
   const test=(d,o)=>{if(d<bd){bd=d;best=o;}};
-  for(const e of S.entities)if(canSelect(e))testGeom(p,e,e,test);
+  /* Narrowed by the segment index, which the snap paths have used since 3.33.0 and this one
+     had not -- leaving it the only per-interaction path still walking every entity. A device
+     report put it at 2.97ms per call, second only to snapping.
+
+     The index gives SEGMENTS; what is wanted is the entities they belong to, which each
+     segment carries as .e. Circles, arcs and text have no segments, so they still need a
+     pass -- and it is a pass over top-level entities, which is a fraction of the point
+     count. */
+  const near=segsNear(p,tol,true);
+  const seen=new Set();
+  for(let i=0;i<near.length;i++){
+    const e=near[i].e;
+    if(!e||seen.has(e))continue;
+    seen.add(e);
+    if(canSelect(e))testGeom(p,e,e,test);
+  }
+  for(const e of S.entities){
+    if(seen.has(e)||!canSelect(e))continue;
+    /* Only the types the index cannot hold. A poly or rect that the index did not return is
+       genuinely out of range, and testing it again would undo the narrowing. */
+    if(!hasNoSegments(e))continue;
+    testGeom(p,e,e,test);
+  }
   for(const m of S.measures)if(canSelect(m))testGeom(p,m,m,test);
   return best;
+}
+/* True for an entity the segment index cannot represent. A group is included because its
+   children may be any of these -- cheaper to test the group than to reason about its
+   contents here. */
+function hasNoSegments(e){
+  if(!e)return false;
+  if(e.t==="circle"||e.t==="arc"||e.t==="text"||e.t==="link")return true;
+  if(e.t==="group")return true;
+  return false;
 }
 function handleAt(sp){
   const tol=COARSE?22:12;
@@ -7329,8 +7458,8 @@ const LIB_PREFIX="dg:lib:";   // one key per named library, so sets stay separab
    you have to remember -- and several builds shipped on the same date anyway, so neither
    answered "which copy am I looking at". A content hash cannot drift: two files showing
    the same one ARE the same file. */
-const APP_NAME="Drafting Grid", APP_VERSION="3.40.0", APP_BUILD="2026-08-29";
-const APP_HASH="60226e97";
+const APP_NAME="Drafting Grid", APP_VERSION="3.42.0", APP_BUILD="2026-08-29";
+const APP_HASH="508fd64c";
 const AUTO_KEY="dg:auto";
 const APP_DOC="drafting-grid";
 const LAYER_APP="drafting-grid-layer";   // one layer and its contents, as a file

@@ -637,6 +637,121 @@ G("Tab tracking");
     /setInterval\(beatTab,TAB_BEAT_MS\)/.test(srcAll));
 }
 
+// ---------- overlay cost ----------
+G("Selection handles");
+{
+  /* A device report measured the overlay at 16.00ms per frame where it is normally 0.06 --
+     200 times -- and the overlay is drawn FRESH every frame, so it is the one cost no cache
+     can skip. One handle per VERTEX with no limit: a selection of 40,521 nodes drew 40,521
+     handles, which works out at almost exactly the 16ms measured. This is the large-group
+     drag reported earlier: not the geometry, the handles. */
+  const dh=codeOf("drawHandles");
+  ok("the handle count is capped",/total>HANDLE_MAX/.test(dh));
+  ok("the cap is a few hundred",/HANDLE_MAX=600/.test(srcAll),
+    "about 0.25ms, and more than anyone can distinguish on screen");
+  ok("past the cap the outline shows the selection",/drawSelOutline\(\);return;/.test(dh),
+    "handles on top of one another are unusable as well as expensive");
+  ok("and it says why, once",/handleCapNoted/.test(dh));
+  /* drawSelOutline had to be WRITTEN: I referenced it as though it existed. */
+  ok("the outline helper exists",/function drawSelOutline/.test(srcAll),
+    "the third helper I invented from thin air today");
+  const so=codeOf("drawSelOutline");
+  ok("it unions the selection's boxes",/objBBox\(o\)/.test(so));
+  ok("and survives an object with no box",/if\(!isFinite\(mnx\)\)return/.test(so));
+  // the arithmetic behind the 16ms
+  const ms=n=>n*0.0004;
+  ok("40,521 handles is about the 16ms measured",Math.abs(ms(40521)-16)<1,
+    ms(40521).toFixed(1)+"ms");
+  ok("600 handles is negligible",ms(600)<0.5,ms(600).toFixed(2)+"ms");
+  /* DXF was untimed: a real log shows a 2.9MB export with no timing, because I wrapped the
+     SVG path and not this one. */
+  ok("the DXF export is timed too",/dxfOut=timeOnce\("DXF export"/.test(srcAll),
+    "a 2.9MB export went unmeasured because only svgOut was wrapped");
+}
+
+// ---------- viewport culling ----------
+G("Viewport culling");
+{
+  /* I CLOSED this item on a measurement of 0% off screen, noting in the tracker that it was
+     "useless HERE, not wrong in principle". A later run at a closer zoom reported 73% off
+     screen with the verdict "culling would pay". Both readings were true; the difference
+     was the zoom, and the diagnostic found the case rather than my guessing when it would
+     arrive. */
+  const mk=codeOf("makeCullTest");
+  ok("there is a cull test",!!mk);
+  ok("it is built once and shared",/const onScreen=makeCullTest\(\)/.test(codeOf("paintStatic")),
+    "four loops walk the drawing; four copies of the arithmetic would drift apart");
+  ["drawEntity","drawMeasure","drawObjLabel"].forEach(f=>
+    ok(f+" is culled",new RegExp("onScreen\\([em]\\)\\) "+f).test(codeOf("paintStatic"))||
+      new RegExp("onScreen\\([em]\\)\\)\\s*"+f).test(codeOf("paintStatic"))));
+  /* An object with no computable extent must be DRAWN, not guessed away. */
+  ok("an object without a bounding box is drawn",/if\(!b\)return true/.test(mk),
+    "a missing object is a far worse fault than a wasted draw call");
+  ok("the margin is generous",/CULL_PAD_PX=120/.test(srcAll),
+    "strokes, labels and haloes are painted outside the geometric box");
+  // the test itself, as behaviour
+  const test=(x0,x1,y0,y1)=>b=>!(b.mxx<x0||b.mnx>x1||b.mxy<y0||b.mny>y1);
+  const t=test(0,1000,0,1000);
+  ok("an object inside the view is kept",t({mnx:100,mxx:200,mny:100,mxy:200}));
+  ok("one straddling the edge is kept",t({mnx:-50,mxx:50,mny:100,mxy:200}));
+  ok("one entirely left of the view is dropped",!t({mnx:-500,mxx:-100,mny:100,mxy:200}));
+  ok("one entirely above is dropped",!t({mnx:100,mxx:200,mny:2000,mxy:3000}));
+  ok("one enclosing the whole view is kept",t({mnx:-1e6,mxx:1e6,mny:-1e6,mxy:1e6}),
+    "a site boundary larger than the screen must still be drawn");
+}
+
+// ---------- hit testing ----------
+G("Hit testing");
+{
+  /* The only per-interaction path still walking every entity: 2.97ms per call on the
+     device, second only to snapping, while the snap paths had used the index since
+     3.33.0. */
+  const h=codeOf("hitAtInner");
+  ok("it uses the segment index",/segsNear\(p,tol,true\)/.test(h));
+  ok("each entity is tested once",/seen\.has\(e\)/.test(h),
+    "many segments belong to one polyline");
+  ok("types the index cannot hold still get a pass",/hasNoSegments\(e\)/.test(h));
+  ok("and a poly the index skipped is NOT retested",
+    /if\(!hasNoSegments\(e\)\)continue/.test(h),
+    "testing it again would undo the narrowing");
+  const hn=codeOf("hasNoSegments");
+  ["circle","arc","text","link","group"].forEach(t=>
+    ok(t+" has no segments",new RegExp('"'+t+'"').test(hn)));
+}
+
+// ---------- intersection snapping ----------
+G("Intersection snapping");
+{
+  /* It stood down with 24,399 segments in range on a dense drawing, which is exactly where
+     crossings are most useful. Two faults: the search box was three times wider than the
+     snap tolerance -- NINE times the area -- and exceeding the cap refused rather than
+     trimmed. */
+  /* `let`, not `const`: the list is reassigned when it has to be trimmed. My assertion read
+     const and failed on correct code. */
+  ok("the search is the snap tolerance, not three times it",
+    /let near=segsNear\(raw,tol,false\)/.test(srcAll),
+    "tripling the tolerance made the box nine times the area for no gain");
+  ok("exceeding the cap trims to the nearest, rather than refusing",
+    /near=withD\.slice\(0,INTER_SNAP_MAX\)/.test(srcAll),
+    "the crossing anyone wants is under the pointer");
+  ok("the distance is computed, not read from projOnSeg",
+    /const q=projOnSeg\(raw,g\.a,g\.b\)\.p/.test(srcAll),
+    "projOnSeg returns {p,t} and no distance \u2014 reading .d2 would have made every key undefined");
+  ok("and the trim is noted once, not per move",/interSnapTrimmed/.test(srcAll));
+  /* Comments stripped: the one remaining mention is the note explaining the removal, which
+     is the fifth time this session an assertion has read its own documentation. */
+  ok("the stand-down path is gone entirely",
+    !/interSnapWarned/.test(srcAll.replace(/\/\*[\s\S]*?\*\//g,"")),
+    "there is nothing left to warn about");
+  // the sort, as behaviour
+  const segs=[{d:9},{d:1},{d:5},{d:3}];
+  const nearest=segs.slice().sort((a,b)=>a.d-b.d).slice(0,2).map(x=>x.d);
+  ok("the nearest are kept",nearest.join()==="1,3");
+  ok("an undefined key would have left the order untouched",
+    [{d:undefined},{d:undefined}].sort((a,b)=>a.d-b.d).length===2,
+    "which is the bug the computed distance avoids");
+}
+
 // ---------- flattening the drawing ----------
 G("Flattening");
 {
@@ -1011,9 +1126,11 @@ G("Spatial index");
   ["near","mid","perp"].forEach(k=>
     ok(k+"-snapping uses the index",
       new RegExp("S\\.snaps\\."+k+"[\\s\\S]{0,400}segsNear\\(").test(srcAll)));
+  /* tol, not tol*3 — and `let`, since the list is reassigned when trimmed. This asserted the
+     3x search that a device report showed returning 24,399 segments. */
   ok("intersection snapping pairs only the local set",
-    /const near=segsNear\(raw,tol\*3,false\)/.test(srcAll),
-    "8.07 billion pairs at 127,000 segments becomes a few dozen");
+    /let near=segsNear\(raw,tol,false\)/.test(srcAll),
+    "8.07 billion pairs at 127,000 segments becomes a few hundred");
   ok("the perpendicular set is centred on the pointer, not the anchor",
     /if\(S\.snaps\.perp&&anchor\) for\(const s of segsNear\(raw,/.test(srcAll),
     "the candidate is the foot of the perpendicular, useful only if it is near the pointer");
@@ -1676,15 +1793,18 @@ G("Intersection snap guard");
      bounds a local crowd rather than the file, and 400 of those is well under a frame. The
      old assertions were correct when written and are now describing something that no
      longer exists. */
+  /* These described a cap that REFUSED. It now trims to the nearest instead, so the
+     feature never stands down and there is no stand-down message to check. Correct when
+     written, describing something that no longer exists. */
   ok("the limit fits inside a frame",msFor(400)<16,
     msFor(400).toFixed(1)+"ms at 400 local segments");
   ok("bounding the whole drawing would not have",msFor(20000)>16,
-    "which is why it now bounds only the neighbourhood");
-  ok("the source caps the local set",/near\.length<=INTER_SNAP_MAX/.test(srcAll));
+    "which is why it bounds the neighbourhood");
+  ok("the source trims to the limit",/near\.length>INTER_SNAP_MAX/.test(srcAll));
   ok("the limit is 400",/INTER_SNAP_MAX=400/.test(srcAll));
-  ok("other snaps keep working when it stands down",
-    /every other kind of snapping still works/i.test(srcAll),
-    "standing down one feature must not read as snapping being broken");
+  ok("the feature no longer switches itself off",
+    !/Intersection snapping is off/.test(srcAll),
+    "refusing was the wrong answer where crossings are most useful");
   ok("it is said once, not per pointer move",/interSnapWarned/.test(srcAll));
   ok("and reset when a drawing loads",/resetInterWarn\(\)/.test(srcAll),
     "a smaller drawing deserves its own verdict");
@@ -2224,8 +2344,11 @@ G("Locking");
   /* Windows widened to 800: the explanatory comments in the source push the code being
      asserted on past a 300-character window, so the test failed on code that was right.
      A source-text test has to allow for the source being commented. */
+  /* Asserted on the function BODY rather than a character window from its name. The window
+     was 800 characters and a comment pushed the lock check past it — the same brittleness
+     that codeOf() exists to avoid, in a test written before codeOf was available here. */
   ok("handles are not drawn on a locked object",
-    /function drawHandles[\s\S]{0,800}o\.lock/.test(src),
+    /o\.lock/.test(codeOf("drawHandles")),
     "handles invite a drag that is then refused");
   ok("select all leaves locked objects out",
     /function selectAll[\s\S]{0,800}filter\(canModify\)/.test(src),

@@ -1,4 +1,4 @@
-# Update → 3.40.0
+# Update → 3.42.0
 
 Ten files. Everything else in the repo is unchanged.
 
@@ -6,40 +6,38 @@ Ten files. Everything else in the repo is unchanged.
 |---|---|
 | `index.html` | **yes** — the app |
 | `CHANGELOG.md` | yes |
-| `tests.js` | 662 tests |
-| `checks.js` | new sweep for concat-in-a-loop |
+| `tests.js` | 700 tests |
+| `checks.js` | the concat sweep |
 | `coverage.json` | **yes** — the ratchet's baseline |
 | `TEST-PLAN.md` | yes, CI diffs it |
-| `TODO.md` | what the device data closed |
+| `TODO.md` | what the data closed and reopened |
 | `drafting-grid.schema.json` | schema 3.35 |
 | `NAMING.md` | the naming convention |
 | `release.sh` | only if you run releases yourself |
 
 Upload all ten: `https://github.com/lballaty/OpenGraph/upload/main`
 
-## Your report decided three things
+## What your last report found
 
-**Decimation: no.** `points per pixel 2.3x` — the points are distinct, so the painting
-is not wasted. I was ready to build it; the measurement says do not, and it is not
-built.
+**The overlay was 16ms a frame** with a large selection, where it is normally 0.06 —
+two hundred times, and the overlay is redrawn every frame regardless of any cache. The
+cause was one handle per vertex with no limit: 40,521 nodes selected meant 40,521
+handles. That is the large-group drag you reported days ago; it was never the geometry.
 
-**The last of the snapping cost was flattening**, not segments. 2.59ms per snap while
-the index tested 148 of 39,204 — the cost was `flattenAll`, called twice per pointer
-move over ~2,357 entities, growing its array with `concat` inside a loop. Now pushed
-and cached. Four other functions had the same shape.
+Capped at 600, with the outline taking over past that. Nothing real is lost — beyond a
+few hundred the handles overlap each other and cannot be grabbed individually anyway.
 
-**Storage was at 2,920KB of ~5MB** and nothing warned. Now warned at 50% and 85%.
+**SVG export is 27ms.** That question is closed. **DXF was not timed at all** — your
+log shows a 2.9MB export with no figure, because I had wrapped only the SVG path. Now
+timed, so the next report will say.
 
-## Also worth knowing
+## Worth trying, in rough order of what would tell us most
 
-At 40,310 nodes your last run was **mean 1.0ms, worst 30ms, zero slow frames**. The
-slow figures were the 79,480-node file. Snapping should now be a fraction of what it
-was even there.
-
-## Still worth trying
-
-- **Create a text object** on the large drawing — the freeze fix from 3.39.0 is
-  untested.
-- **Rotate the iPad** with a drawing open — the offscreen buffer now grows on rotation.
-- An **Export SVG** while measuring. That path has still never been timed; the report
-  shows `building the document 0ms` but no export.
+1. **Select everything on a large drawing and drag it.** That is the path this release
+   changes. Expect the outline rather than handles, and a note saying why.
+2. **Create a text object** on a large drawing — the 3.39.0 freeze fix, still untested.
+3. **Rotate the iPad** with a drawing open. Stale pixels at an edge would be the sign
+   I got the buffer growth wrong.
+4. **Zoom in and pan** — the culling path. An object vanishing near the edge is the
+   failure mode.
+5. **DXF export** while measuring, now that it reports a time.
