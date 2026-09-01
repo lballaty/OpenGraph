@@ -423,6 +423,16 @@
   #askVer:hover{color:var(--txt)}
   #ask ol{margin:6px 0 0 18px;padding:0;font-size:12px;line-height:1.5}
   #ask ol li{margin:0 0 7px}
+  /* The Ask answers reuse .lay/.nm, which was written for a LAYER row: one short name that
+     should not wrap and should ellipsis if long. An answer is three stacked lines of prose
+     -- the title, how to do it, and why you would -- so every one was clamped to a single
+     line and cut. On a 360px panel that is about 45 characters of a sentence that usually
+     runs to 150, and the "why" line, which is the half normally left out, was worst hit.
+
+     Scoped to #ask so layer rows keep the single-line behaviour they want. */
+  #ask .lay{align-items:flex-start}
+  #ask .lay .nm,#ask .nm{white-space:normal;overflow:visible;text-overflow:clip;
+    line-height:1.45;word-break:break-word}
   #askval{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:31;
     background:var(--panel);border:1px solid var(--hair);border-radius:10px;padding:16px;
     width:min(360px,92vw);box-shadow:0 18px 50px rgba(0,0,0,.55);display:none}
@@ -1453,6 +1463,8 @@ function segments(all){
   if(cached)return cached;
   const sgT=profStart("segments rebuild");
   const out=[];
+  // Each segment is one short-lived object; the count is the pooling question's answer.
+  const allocBefore=out.length;
   for(const {o,root} of flattenAll(S.entities)){
     if(!all&&!visible(root))continue;
     const ch=chainOf(o);
@@ -1460,6 +1472,7 @@ function segments(all){
   }
   if(all){segCacheAll=out;segCacheAllVer=geomVersion;}
   else{segCache=out;segCacheVer=geomVersion;}
+  if(PROF.on){MEAS.allocs+=out.length;MEAS.allocFrames++;}
   profEnd("segments rebuild",sgT);
   return out;
 }
@@ -1757,6 +1770,39 @@ function trimCircle(o,p){
   logLine("trim: circle cut to an arc of "+(keepSweep*180/Math.PI).toFixed(1)+"\u00b0");
   note("Trimmed to an arc of "+(keepSweep*180/Math.PI).toFixed(0)+"\u00b0.");
 }
+/* A curved polyline is drawn as quadratics through the midpoints of its segments, so the
+   drawn curve deviates from the straight chain by at most a QUARTER of the segment length.
+   Whether that matters depends entirely on how far apart the points are:
+
+     a hand-placed curve with 200px segments   deviates by up to 50px  -- refusing is right
+     a freehand sketch simplified to 1.5px     deviates by under 0.4px -- refusing is absurd
+
+   3.18.0 started marking every recognised sketch as curved, which made every freehand line
+   ineligible for Trim, Extend, Break and Offset -- a real log shows the refusal four times
+   in eight seconds. The guard was written for the first case and applied to both.
+
+   So it is measured rather than assumed. Half a screen pixel is the threshold: below that
+   the curve and the chain are the same line as far as anyone can see. */
+/* 2px, not 0.5. At half a pixel an ordinary sketch became "approximate" as soon as you
+   zoomed in past 4x, which is nagging about something invisible. Two pixels is about where
+   a cut landing off-target becomes noticeable. */
+const CURVE_TOL_PX=2;
+/* Returns the worst gap in MILLIMETRES, so the caller can state it rather than say "a
+   little off" -- which tells you nothing you can act on. The figure varies from a fraction
+   of a millimetre on a sketch to over a metre on a coarse curve at site scale, so a fixed
+   adjective was never going to be useful. */
+function curveGapMM(o){
+  if(!o||o.t!=="poly"||!o.curve||!Array.isArray(o.p)||o.p.length<3)return 0;
+  let worst=0;
+  for(let i=0;i<o.p.length-1;i++){
+    const d=dist(o.p[i],o.p[i+1]);
+    if(d/4>worst)worst=d/4;
+  }
+  return worst;
+}
+function curveDeviatesVisibly(o){
+  return curveGapMM(o)*S.view.zoom>CURVE_TOL_PX;
+}
 function trimTarget(p,verb){
   const o=hitAt(p);
   /* Silence here was the whole of "it does not work on polygons": a tap inside a closed
@@ -1776,11 +1822,16 @@ function trimTarget(p,verb){
     note("An arc cannot be "+verb+". Explode it first to get straight edges.");
     return null;
   }
-  if(o.t==="poly"&&o.curve){
-    note("This line is drawn as a curve, so "+verb+" it would not follow what you see. "+
-      "Turn the curve off in Style first.");
-    return null;
-  }
+  /* Allowed, with a word when it is approximate. Refusing was wrong in every case, and I
+     had missed why: the RESULT of trimming a curved polyline is still a curved polyline,
+     drawn smoothly through the points that remain. The whole shape does not become
+     faceted -- only the CUT lands up to a quarter of one segment from the visible curve.
+
+     For a sketch that is under half a pixel. For a coarse hand-placed curve it can be tens
+     of pixels, which is worth saying but not worth forbidding. */
+  if(o.t==="poly"&&o.curve&&curveDeviatesVisibly(o))
+    note("This line is drawn as a curve, so the cut may land up to "+
+      fmtBig(curveGapMM(o))+" from where you tapped.");
   if(!(o.t==="poly"||o.t==="rect")){
     note("That can only be done to a line, polyline or rectangle.");
     return null;
@@ -2032,8 +2083,12 @@ function offsetObj(o,d,outward){
    worse than refused, and the same fault Trim had. */
 function offsetEligibility(o){
   if(!canSelect(o))return "on a hidden or locked layer";
-  if(o.t==="poly"&&o.curve)
-    return "drawn as a curve \u2014 offsetting would not follow what you see; turn the curve off in Style first";
+  /* Offset is the one case where refusing IS right: it rebuilds the whole line at a
+     distance from every segment, so a coarse curve comes back visibly faceted -- unlike a
+     trim, which only moves one endpoint. */
+  if(o.t==="poly"&&o.curve&&curveDeviatesVisibly(o))
+    return "drawn as a curve whose points are "+fmtBig(curveGapMM(o)*4)+" apart \u2014 the parallel "+
+      "copy would be faceted by up to "+fmtBig(curveGapMM(o))+"; turn the curve off in Style first";
   if(o.t==="poly"||o.t==="rect"||o.t==="circle"||o.t==="arc")return null;
   if(o.t==="group")return "a group \u2014 ungroup it first, then offset the parts";
   if(o.t==="text")return "text, which has no outline to offset";
@@ -2942,6 +2997,18 @@ function snapPointInner(sp,ignore){
     const t=((anchor.x-s.a.x)*vx+(anchor.y-s.a.y)*vy)/L;if(t<0||t>1)continue;
     add({x:s.a.x+vx*t,y:s.a.y+vy*t},4,"perp","perpendicular");}
   if(S.snaps.near){
+    /* Locality, measured. A spatial index only pays if the great majority of segments
+       examined are nowhere near the pointer -- if most of them ARE near, an index would
+       return almost everything and save nothing. Counting both numbers answers it. */
+    if(PROF.on){
+      MEAS.snapCalls++;
+      MEAS.segsExamined+=segs.length;
+      for(const s of segs){
+        const bx0=Math.min(s.a.x,s.b.x)-tol, bx1=Math.max(s.a.x,s.b.x)+tol;
+        const by0=Math.min(s.a.y,s.b.y)-tol, by1=Math.max(s.a.y,s.b.y)+tol;
+        if(raw.x>=bx0&&raw.x<=bx1&&raw.y>=by0&&raw.y<=by1)MEAS.segsNear++;
+      }
+    }
     for(const s of segs) add(projOnSeg(raw,s.a,s.b).p,5,"near","on line");
     for(const{o,root}of flattenAll(S.entities)){
       if(!visible(root)||(ignore&&ignore.includes(root)))continue;
@@ -3049,6 +3116,180 @@ function hitAt(p){
   const t0=profStart("hit test");
   try{return hitAtInner(p);}finally{profEnd("hit test",t0);}
 }
+/* ---------- headless intent API ----------
+   One entry point that executes drawing operations through the SAME code paths the UI
+   uses. Every intent is a plain object, so it can come from a test, a pasted script, or an
+   agent, and nothing needs a DOM event to reach the geometry.
+
+   The reason for building this before anything else on the list: it is purely additive --
+   no existing behaviour changes -- and it closes the gap that let the NaN-coordinate bug
+   survive nineteen releases. live.js can click buttons and dispatch pointer events, but it
+   could not construct geometry through the real code, so a corrupt object written by a
+   real code path was invisible to every check.
+
+   Two rules it enforces that the UI learned the hard way:
+     - a position must be a finite pair of numbers, refused otherwise, never written as NaN
+     - the result is audited by the same validator every import route uses
+
+   It returns a result rather than throwing, so a caller can inspect a refusal. */
+const INTENTS={};
+function defIntent(op,argSpec,run){INTENTS[op]={argSpec,run};}
+/* Validation is declarative so every intent gets the same treatment, and so a new one
+   cannot quietly skip it. */
+function checkArgs(spec,a){
+  for(const key in spec){
+    const kind=spec[key], v=a[key];
+    if(kind.endsWith("?")&&(v===undefined||v===null))continue;
+    const k=kind.replace("?","");
+    if(k==="point"){
+      if(!v||typeof v.x!=="number"||typeof v.y!=="number"||!isFinite(v.x)||!isFinite(v.y))
+        return key+" must be a point with finite x and y";
+    }else if(k==="points"){
+      if(!Array.isArray(v)||v.length<2)return key+" must be an array of at least two points";
+      for(let i=0;i<v.length;i++){
+        const q=v[i];
+        if(!q||typeof q.x!=="number"||typeof q.y!=="number"||!isFinite(q.x)||!isFinite(q.y))
+          return key+"["+i+"] must be a point with finite x and y";
+      }
+    }else if(k==="number"){
+      if(typeof v!=="number"||!isFinite(v))return key+" must be a finite number";
+    }else if(k==="positive"){
+      if(typeof v!=="number"||!isFinite(v)||v<=0)return key+" must be a positive number";
+    }else if(k==="string"){
+      if(typeof v!=="string"||!v.length)return key+" must be a non-empty string";
+    }
+  }
+  return null;
+}
+function applyIntent(intent){
+  if(!intent||typeof intent!=="object")return{ok:false,error:"an intent must be an object"};
+  const def=INTENTS[intent.op];
+  if(!def)return{ok:false,error:"unknown op \u201c"+intent.op+"\u201d. Known: "+
+    Object.keys(INTENTS).sort().join(", ")};
+  const bad=checkArgs(def.argSpec,intent);
+  if(bad)return{ok:false,error:bad};
+  try{
+    const r=def.run(intent);
+    /* Audited with the same validator every import uses: an intent that produced a faulty
+       entity should be caught here, not two sessions later on a reload. */
+    const audit=auditEntityList(S.entities,"after "+intent.op);
+    if(audit.dropped.length){
+      S.entities=audit.keep;
+      return{ok:false,error:"the result was faulty and was discarded: "+audit.dropped[0]};
+    }
+    draw();
+    return{ok:true,...(r||{})};
+  }catch(err){
+    logLine("intent \u201c"+intent.op+"\u201d threw: "+((err&&err.message)||err),"error");
+    return{ok:false,error:(err&&err.message)||String(err)};
+  }
+}
+/* A batch, so a whole drawing can be built in one call and stops at the first refusal --
+   half-applied geometry is worse than none. */
+function applyIntents(list){
+  if(!Array.isArray(list))return{ok:false,error:"expected an array of intents"};
+  push();
+  const done=[];
+  for(let i=0;i<list.length;i++){
+    const r=applyIntent(list[i]);
+    if(!r.ok){
+      undoLast();
+      return{ok:false,error:"intent "+i+" ("+(list[i]&&list[i].op)+"): "+r.error,applied:0};
+    }
+    done.push(r);
+  }
+  return{ok:true,applied:done.length,results:done};
+}
+
+/* ---------- the intents ---------- */
+defIntent("line",{p:"points",layer:"number?"},i=>{
+  const o={t:"poly",p:i.p.map(q=>({x:r4(q.x),y:r4(q.y)})),l:i.layer||S.cur};
+  if(i.closed)o.cl=true;
+  ["color","weight","dash","op","fill","fop","hatch","hs","label","curve"].forEach(k=>{
+    if(i[k]!==undefined)o[k]=i[k];});
+  push();S.entities.push(o);S.sel=[o];
+  return{id:ensureId(o)};
+});
+defIntent("rect",{at:"point",w:"positive",h:"positive",layer:"number?"},i=>{
+  const o={t:"rect",x:r4(i.at.x),y:r4(i.at.y),w:r4(i.w),h:r4(i.h),l:i.layer||S.cur};
+  ["color","weight","dash","op","fill","fop","hatch","hs","label"].forEach(k=>{
+    if(i[k]!==undefined)o[k]=i[k];});
+  push();S.entities.push(o);S.sel=[o];
+  return{id:ensureId(o)};
+});
+defIntent("circle",{at:"point",r:"positive",layer:"number?"},i=>{
+  const o={t:"circle",c:{x:r4(i.at.x),y:r4(i.at.y)},r:r4(i.r),l:i.layer||S.cur};
+  ["color","weight","dash","op","fill","fop","hatch","hs","label"].forEach(k=>{
+    if(i[k]!==undefined)o[k]=i[k];});
+  push();S.entities.push(o);S.sel=[o];
+  return{id:ensureId(o)};
+});
+defIntent("text",{at:"point",str:"string",size:"positive?",layer:"number?"},i=>{
+  const o={t:"text",p:{x:r4(i.at.x),y:r4(i.at.y)},str:i.str,
+    size:i.size||S.textSize,rot:i.rot||0,l:i.layer||S.cur};
+  ["color","op","fill","fop"].forEach(k=>{if(i[k]!==undefined)o[k]=i[k];});
+  push();S.entities.push(o);S.sel=[o];
+  return{id:ensureId(o)};
+});
+defIntent("symbol",{name:"string",at:"point"},i=>{
+  const sym=symbols.find(x=>x.name===i.name);
+  if(!sym)throw new Error("no symbol named \u201c"+i.name+"\u201d in the \u201c"+libName+"\u201d set");
+  placeSymbol(sym,{x:i.at.x,y:i.at.y});
+  return{placed:sym.name};
+});
+defIntent("select",{},i=>{
+  if(i.all){S.sel=S.entities.concat(S.measures).filter(canModify);return{selected:S.sel.length};}
+  if(Array.isArray(i.ids)){
+    /* A Set, because includes() inside a filter is the quadratic pattern this session
+       already removed from eleven places -- and I reintroduced it here within an hour.
+       The check that caught it was written today for exactly this. */
+    const want=new Set(i.ids);
+    S.sel=S.entities.filter(o=>o.id!=null&&want.has(o.id));
+    return{selected:S.sel.length};
+  }
+  S.sel=[];return{selected:0};
+});
+defIntent("command",{name:"string"},i=>{
+  const c=CMD[i.name];
+  if(!c)throw new Error("no command \u201c"+i.name+"\u201d. Known: "+Object.keys(CMD).sort().join(", "));
+  c.run();
+  return{ran:i.name};
+});
+defIntent("layer",{name:"string"},i=>{
+  const existing=S.layers.find(l=>l.name===i.name);
+  if(existing){S.cur=existing.id;return{id:existing.id,created:false};}
+  const id=S.nextLayer++;
+  S.layers.push({id,name:i.name,color:i.color||"#1d2a35",
+    vis:i.vis!==false,lock:!!i.lock,guide:!!i.guide});
+  S.cur=id;layerUI();
+  return{id,created:true};
+});
+defIntent("unit",{unit:"string"},i=>{
+  if(!U[i.unit])throw new Error("unknown unit \u201c"+i.unit+"\u201d");
+  S.unit=i.unit;syncUI();
+  return{unit:i.unit};
+});
+/* Read-only, so a caller can check its work without a screenshot. */
+defIntent("inspect",{},()=>({
+  objects:S.entities.length, measures:S.measures.length,
+  nodes:nodesTotal(), layers:S.layers.length, unit:S.unit,
+  selected:S.sel.length
+}));
+
+/* Exposed deliberately: this is the seam a test, a pasted script or an agent uses.
+   Version and build are read through getters rather than captured, because APP_VERSION is
+   a const declared further down the file -- capturing it here threw "Cannot access
+   APP_VERSION before initialization" and stopped the whole script, which is why the API
+   was not defined at all on the first attempt. The execution harness caught it; a source
+   check could not have. */
+window.draftingGrid={
+  intent:applyIntent, intents:applyIntents,
+  ops:()=>Object.keys(INTENTS).sort(),
+  doc:()=>doc(),
+  get version(){return APP_VERSION;},
+  get build(){return APP_HASH;}
+};
+
 /* ---------- profiler ----------
    Built because every performance figure so far came from my own machine, and the device
    that matters cannot be measured from here. This attributes cost to named phases on the
@@ -3071,6 +3312,47 @@ const PROF={
   reportedAt:0
 };
 const pnow=()=>(performance&&performance.now?performance.now():Date.now());
+
+/* ---------- measurements for the four open architecture questions ----------
+   Each of these exists to turn one of my estimates into a fact from the device. All are
+   gated behind the profiler, so they cost nothing when it is off.
+
+   1. Is a pointer state machine needed?  Count contradictory state combinations.
+   2. Would viewport culling pay?         Count entities entirely off screen.
+   3. Would object pooling pay?           Count short-lived objects per frame.
+   4. Would a spatial index pay?          Count segments examined versus segments near.
+
+   The point is that each can come back "no". A measurement that can only confirm what I
+   already believe is not a measurement. */
+const MEAS={
+  stateClashes:0, clashKinds:{},
+  culled:0, drawn:0,
+  allocs:0, allocFrames:0,
+  segsExamined:0, segsNear:0, snapCalls:0
+};
+/* The FSM question. These flags are meant to be mutually exclusive -- you cannot be
+   panning and box-selecting and dragging at once -- but nothing enforces it, and a dropped
+   pointerup or an aborted stylus gesture can leave two set. That is precisely the failure
+   an FSM removes, so counting it decides whether to build one. */
+function measState(where){
+  if(!PROF.on)return;
+  const active=[];
+  if(panning)active.push("panning");
+  if(band)active.push("band");
+  if(drag)active.push("drag");
+  if(pend&&pend.pts&&pend.pts.length)active.push("drawing");
+  if(sketchPts)active.push("sketching");
+  if(dragSym)active.push("dragSym");
+  if(m2p)active.push("mid2");
+  if(linkFrom)active.push("linking");
+  if(textEditing)active.push("textEditing");
+  if(active.length>1){
+    MEAS.stateClashes++;
+    const k=active.join("+");
+    MEAS.clashKinds[k]=(MEAS.clashKinds[k]||0)+1;
+    logLine("state clash at "+where+": "+k,"warn");
+  }
+}
 function profStart(name){
   if(!PROF.on)return 0;
   PROF.count[name]=(PROF.count[name]||0)+1;
@@ -3182,6 +3464,36 @@ function profReport(reason){
       ?Math.round(m.usedJSHeapSize/1048576)+"MB used of "+Math.round(m.jsHeapSizeLimit/1048576)+"MB"
       :"not reported by this browser"));
   }catch(err){L.push("   JS heap              not reported by this browser");}
+  /* Each of these says what it DECIDES, not just what it counted. A number without its
+     consequence gets read once and forgotten; a number with a verdict attached is a
+     decision someone can act on or argue with. Every one can come back "not needed". */
+  L.push("architecture questions, from this run:");
+  if(!PROF.frames)L.push("   (nothing measured yet \u2014 draw something with measurement on)");
+  else{
+    const clashes=MEAS.stateClashes;
+    L.push("   pointer state clashes   "+clashes+
+      (clashes?"  \u2192 a state machine would prevent these: "+
+        Object.entries(MEAS.clashKinds).sort((a,b)=>b[1]-a[1]).slice(0,3)
+          .map(([k,n])=>k+" \u00d7"+n).join(", ")
+       :"  \u2192 no contradictory states seen; an FSM would be tidiness, not a fix"));
+    const tot=MEAS.culled+MEAS.drawn;
+    L.push("   entities off screen     "+(tot?Math.round(MEAS.culled/tot*100):0)+"%"+
+      "  ("+MEAS.culled+" of "+tot+")"+
+      (tot&&MEAS.culled/tot>0.5?"  \u2192 culling would pay"
+        :"  \u2192 culling would save little at this zoom"));
+    const perFrame=MEAS.allocFrames?Math.round(MEAS.allocs/MEAS.allocFrames):0;
+    L.push("   objects built per rebuild "+perFrame.toLocaleString()+
+      (perFrame>20000?"  \u2192 object pooling worth measuring further"
+        :"  \u2192 too few for pooling to matter"));
+    if(MEAS.snapCalls){
+      const pct=MEAS.segsExamined?(MEAS.segsNear/MEAS.segsExamined*100):0;
+      L.push("   segments near the pointer "+pct.toFixed(2)+"% of "+
+        Math.round(MEAS.segsExamined/MEAS.snapCalls).toLocaleString()+" examined per snap"+
+        (pct<5&&MEAS.segsExamined/MEAS.snapCalls>2000
+          ?"  \u2192 a spatial index would pay"
+          :"  \u2192 an index would return most of them anyway"));
+    }else L.push("   snap locality           not measured (near-snapping off)");
+  }
   L.forEach(x=>logLine(x,"error"));   // "error" so it survives at any log level
   /* Kept separately as well as logged. The log is capped at 400 lines and Copy takes the
      last 120, so a report made early in a session and followed by drawing is pushed out of
@@ -3192,6 +3504,9 @@ function profReport(reason){
   try{if(hasStore)STORE_WRAPPED.set(PERF_KEY,JSON.stringify(profReports),false);}catch(err){}
 }
 function profReset(){
+  MEAS.stateClashes=0;MEAS.clashKinds={};
+  MEAS.culled=MEAS.drawn=MEAS.allocs=MEAS.allocFrames=0;
+  MEAS.segsExamined=MEAS.segsNear=MEAS.snapCalls=0;
   PROF.frames=PROF.blits=PROF.rebuilds=PROF.slow=0;
   PROF.frameMs=PROF.worstMs=0;
   PROF.phase={};PROF.count={};PROF.keyChanges={};
@@ -3276,6 +3591,20 @@ function staticKey(){
     S.layers.map(l=>(l.vis?1:0)+(l.guide?2:0)+l.color).join("");
 }
 function paintStatic(g){
+  /* Culling potential, counted rather than assumed. If nothing is ever off screen, culling
+     is worthless however elegant; if most of the drawing is, it is the largest win
+     available. At the zoom where a whole site is visible the answer should be near zero,
+     which is exactly why I would not build it on an estimate. */
+  if(PROF.on){
+    const vmin=toM({x:0,y:H}), vmax=toM({x:W,y:0});
+    for(const e of S.entities){
+      if(!visible(e))continue;
+      const b=objBBox(e);
+      if(!b){MEAS.drawn++;continue;}
+      if(b.mxx<vmin.x||b.mnx>vmax.x||b.mxy<vmin.y||b.mny>vmax.y)MEAS.culled++;
+      else MEAS.drawn++;
+    }
+  }
   g.clearRect(0,0,W,H);g.fillStyle="#fbfaf6";g.fillRect(0,0,W,H);
   if(S.showGrid)drawGrid(g,W,H);
   drawSheet(g);   // behind the drawing: it is the paper, not part of the work
@@ -5179,6 +5508,7 @@ let panning=false,panLast=null,pinch=null,moved=0,downPt=null;
 const rel=e=>{const r=cv.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};};
 
 cv.addEventListener("pointerdown",e=>{
+  measState("pointerdown");
   /* A blocking dialog is on screen. This press is not drawing input -- without the guard,
      tapping beside an open Save menu added a shape to the sheet.
 
@@ -5241,6 +5571,7 @@ cv.addEventListener("pointerdown",e=>{
   draw();
 });
 cv.addEventListener("pointermove",e=>{
+  measState("pointermove");
   quickPressMove(e);   // any real movement means this was a drag, not a long press
   if(suppressedPointers.has(e.pointerId))return;
   const sp=rel(e);
@@ -5323,7 +5654,7 @@ function endPtr(e){
   commit(cursor);
   if(e.pointerType!=="mouse"&&pend.pts.length===0){cursor=null;snapInfo=null;draw();}
 }
-cv.addEventListener("pointerup",e=>{quickPressCancel();endPtr(e);});
+cv.addEventListener("pointerup",e=>{measState("pointerup");quickPressCancel();endPtr(e);});
 cv.addEventListener("pointercancel",e=>{
   quickPressCancel();
   const wasMulti=ptrs.size>=2;
@@ -6401,8 +6732,8 @@ const LIB_PREFIX="dg:lib:";   // one key per named library, so sets stay separab
    you have to remember -- and several builds shipped on the same date anyway, so neither
    answered "which copy am I looking at". A content hash cannot drift: two files showing
    the same one ARE the same file. */
-const APP_NAME="Drafting Grid", APP_VERSION="3.23.0", APP_BUILD="2026-08-29";
-const APP_HASH="8ad059c1";
+const APP_NAME="Drafting Grid", APP_VERSION="3.28.1", APP_BUILD="2026-08-29";
+const APP_HASH="3438fde8";
 const AUTO_KEY="dg:auto";
 const APP_DOC="drafting-grid";
 const LAYER_APP="drafting-grid-layer";   // one layer and its contents, as a file
@@ -6831,6 +7162,9 @@ function closeBoardDlg(){$("boardDlg").classList.remove("open");syncScrim();}
    set or template changed elsewhere is picked up here instead of being overwritten by a
    stale copy. */
 const TAB_ID=Math.random().toString(36).slice(2,8)+"-"+Date.now().toString(36);
+/* A two-character mark for this tab, used to attribute shared log lines. Derived from
+   TAB_ID so it is stable for the life of the tab and differs between tabs. */
+const TAB_MARK=TAB_ID.slice(0,2);
 let tabsSeen=1;
 async function beatTab(){
   if(!hasStore||storeIsMemory())return;
@@ -6839,8 +7173,17 @@ async function beatTab(){
     let tabs={};
     try{tabs=v&&v.value?JSON.parse(v.value):{};}catch(err){}
     const now=Date.now();
-    // Anything that has not checked in for half a minute is a tab that was closed.
-    for(const k in tabs)if(now-tabs[k]>30000)delete tabs[k];
+    /* Ghost tabs. A RELOAD gets a fresh TAB_ID, and the old entry then lived for the full
+       30 seconds -- so reloading six times in ten seconds reported seven tabs, six of them
+       dead. A real log showed the count climbing 3, 4, 5, 6, 7, 8, 9 in thirteen seconds
+       and settling at 2 a minute later.
+
+       That matters because the warning is about a real hazard -- two tabs sharing one
+       storage, last save wins -- and a warning that cries wolf gets ignored.
+
+       Two changes: the beat is faster than the expiry by a comfortable margin, and a tab
+       removes its own entry on the way out, so a reload does not leave a ghost at all. */
+    for(const k in tabs)if(now-tabs[k]>TAB_STALE_MS)delete tabs[k];
     tabs[TAB_ID]=now;
     await STORE_WRAPPED.set(TAB_KEY,JSON.stringify(tabs),false);
     const n=Object.keys(tabs).length;
@@ -8558,7 +8901,8 @@ setTimeout(()=>{
        as a genuine failure to detect the host. The backend matters just as much -- a
        rate-limited host bridge and ordinary localStorage behave very differently. */
     "  \u00b7 "+describeOrigin()+
-    "  \u00b7 storage: "+storeKind+(hasStore?"":" (UNAVAILABLE)"));
+    "  \u00b7 storage: "+storeKind+(hasStore?"":" (UNAVAILABLE)")+
+    "  \u00b7 tab "+TAB_MARK);
 },0);
 /* ---------- one environment dump, at startup ----------
    Written after several rounds of "add one more diagnostic and try again". Everything
@@ -8589,10 +8933,35 @@ async function logEnvironment(){
     const p=navigator.storage&&navigator.storage.persisted?await navigator.storage.persisted():null;
     L.push("kept by the browser: "+(p===null?"cannot tell":p?"yes":"no \u2014 may be cleared after inactivity"));
   }catch(err){}
+  /* Measured directly, because the reported quota was actively misleading: it said
+     "quota about 39322MB, used about 0KB" on a browser holding ten symbol sets and nine
+     templates. navigator.storage.estimate() covers the Storage API family -- Cache,
+     IndexedDB, OPFS -- and Safari does not count localStorage in it, which is where all of
+     that actually lives. So the line read "39GB free, using none" while the real budget was
+     the ~5MB localStorage limit.
+
+     Summing the app's own keys is exact and cheap, and it is the number that matters. The
+     estimate is still reported, labelled as being about something else. */
+  try{
+    if(typeof localStorage!=="undefined"){
+      let bytes=0,keys=0;
+      for(let i=0;i<localStorage.length;i++){
+        const k=localStorage.key(i);
+        if(!k||!k.startsWith("dg:"))continue;
+        bytes+=k.length+((localStorage.getItem(k)||"").length);
+        keys++;
+      }
+      /* Two bytes per character is how a browser stores a JS string, so the figure is
+         doubled to reflect what the 5MB budget is actually counting. */
+      L.push("browser storage: about "+Math.round(bytes*2/1024)+"KB used across "+keys+
+        " keys, of roughly 5MB available to this origin");
+    }
+  }catch(err){L.push("browser storage: size could not be measured");}
   try{
     const est=navigator.storage&&navigator.storage.estimate?await navigator.storage.estimate():null;
-    if(est&&est.quota)L.push("quota about "+Math.round(est.quota/1048576)+"MB, used about "+
-      Math.round((est.usage||0)/1024)+"KB");
+    if(est&&est.quota)L.push("Storage API quota "+Math.round(est.quota/1048576)+"MB, used "+
+      Math.round((est.usage||0)/1024)+"KB \u2014 this covers IndexedDB and caches, NOT the "+
+      "localStorage where sets and templates live");
   }catch(err){}
   /* Memory, as far as any browser will say. The history figure is exact because the app
      built those strings; the heap figure appears only where the browser offers one. */
@@ -8656,7 +9025,14 @@ function logLine(msg,kind){
   if(need>logLevel)return;
   const t=new Date().toTimeString().slice(0,8);
   if(typeof msg==="function")msg=msg();
-  logLines.push(t+"  "+(kind==="error"?"[error] ":kind==="warn"?"[warn]  ":
+  /* Tagged with a short tab mark, because the log is SHARED: it lives in localStorage and
+     every tab writes to the same one. That is deliberate -- a crash in one tab should be
+     readable from another -- but without attribution a copied log mixes tabs and builds
+     with no way to tell them apart. A real log held env dumps from 3.21.1 and 3.23.0
+     interleaved, and reading it I could not tell which tab had produced the report.
+
+     Two characters, so it costs almost nothing per line and stays scannable. */
+  logLines.push(t+" "+TAB_MARK+" "+(kind==="error"?"[error] ":kind==="warn"?"[warn]  ":
     kind==="debug"?"[debug] ":"        ")+msg);
   if(logLines.length>LOG_MAX)logLines.splice(0,logLines.length-LOG_MAX);
   clearTimeout(logTimer);
@@ -9354,6 +9730,15 @@ const HOWTO=[
  {t:"Join split lines back into one",i:"join-lines",k:"join rejoin reconnect reconnect merge weld fuse combine unite stitch back together split break explode undo split whole one line",w:"Select the pieces, then tap Join on the bottom bar",c:"join"},
  {t:"Bring to front or send to back",i:"order-front-back",k:"front back backwards forward backward order stacking stack top underneath beneath behind hidden covered obscured another overlap overlapping raise lower bring push above below",w:"Select it, then tap the To front or To back button on the bottom bar",c:"front"},
  {t:"Change the size of something",i:"resize-selection",k:"resize scale bigger smaller shrink grow enlarge reduce size wrong size too big too small proportion",w:"Select it, then tap the Resize button on the Edit bar",c:"scale"},
+ {t:"Hide the grid, the border or the labels for a clean view",i:"view-toggles",k:"hide grid border sheet title block labels dimensions clean view clutter turn off show",w:"Tap View in the bottom bar",c:null},
+ {t:"Make something see-through",i:"transparency",k:"transparent transparency opacity see through fade shade translucent alpha wash zone",w:"Select it, then Style → Transparency. Object dims the whole thing, Fill only dims what is inside",c:"style"},
+ {t:"Stop something being moved by accident",i:"lock-object",k:"lock locked padlock protect freeze pin fix accident nudge immovable survey boundary",w:"Select it, then tap Lock on the bottom bar. It stays selectable so you can unlock it",c:null},
+ {t:"See how big my drawing is",i:"node-count",k:"nodes node count size big large points how many objects heavy",w:"The Nodes cell in the bottom bar counts the points being drawn, and how many are on hidden layers",c:null},
+ {t:"Find out why the app feels slow",i:"measure-performance",k:"slow sluggish lag stutter freeze frame rate performance measure profile diagnose",w:"Settings → About → Diagnostics → Measure performance, then Report now",c:"settings"},
+ {t:"Keep saved files in one folder",i:"working-folder",k:"folder working folder save location where files go directory desktop",w:"Settings → Working folder, on a desktop browser. It does not appear on iPad, which has no such API",c:"settings"},
+ {t:"Why has autosave stopped",i:"autosave-limit",k:"autosave stopped not saving too large standing down storage full limit",w:"A drawing over 1.5MB is too large for autosave — save to a file instead. Settings → Autosave says so",c:"save"},
+ {t:"The app is open in several tabs",i:"several-tabs",k:"tabs tab two several many shared storage last save wins conflict overwrite",w:"They share one storage, so the last to save wins. Close the others, or keep to one tab",c:null},
+ {t:"Bring something in front of or behind",i:"order-depth",k:"front back forward backward depth order stack on top underneath behind hidden covered",w:"Select it, then To front or To back on the bottom bar",c:"front"},
  {t:"Offset — make a parallel copy at a set distance",i:"offset-parallel",k:"offset parallel copy alongside inset outset clearance second face wall thickness margin duplicate",w:"Select it, then tap the Offset button on the Edit bar",c:"offset"},
  {t:"Offset refused, or nothing happened",i:"offset-limits",k:"offset parallel copy wont work does not work refused nothing happened group text curve arc dimension",w:"Offset works on lines, polylines, rectangles, circles and arcs. Ungroup a group first; turn a curve off in Style first",c:"offset"},
  {t:"Draw a board or enclosure to an exact size",i:"draw-board-outline",k:"board pcb enclosure panel outline holes mounting pattern eurocard hat shield exact size",w:"Tap the Board button on the Draw bar",c:"board"},
@@ -10606,6 +10991,7 @@ $("aboutCopy").onclick=async()=>{
      asked for the log separately is the round trip this is meant to remove. */
   const txt=APP_NAME+" "+i.version+" ("+i.build+" \u00b7 "+i.hash+")\n"+
     "address: "+describeOrigin()+"\n"+
+    "this tab: "+TAB_MARK+"  (log lines from other tabs carry a different mark)\n"+
     "running: "+i.mode+"\nsource: "+i.source+"\nstorage: "+i.backend+
     "\npersisted: "+i.persisted+"\ndrawings: "+i.drawings+"  templates: "+i.templates+
     "  symbol sets: "+i.libraries+"\nautosave: "+i.autosave+"\nUA: "+navigator.userAgent+
@@ -11233,7 +11619,23 @@ if(storeIsMemory()){
     "Everything works for now, but symbol sets, templates and autosave will not survive closing "+
     "the page \u2014 use Save library and Export everything to keep them. Settings \u2192 About explains."),1200);
 }
-loadLog();watchOtherTabs();beatTab();setInterval(beatTab,15000);
+/* 4s beat against a 12s expiry: three missed beats before a tab is presumed gone, which
+   tolerates a backgrounded tab without keeping a closed one alive for half a minute. */
+const TAB_BEAT_MS=4000, TAB_STALE_MS=12000;
+loadLog();watchOtherTabs();beatTab();setInterval(beatTab,TAB_BEAT_MS);
+/* Deregister on the way out. pagehide, not unload: Safari on iOS does not reliably fire
+   unload, and pagehide covers both closing and navigating away. Synchronous, because an
+   async write during teardown may not complete. */
+addEventListener("pagehide",()=>{
+  try{
+    if(!hasStore||storeIsMemory())return;
+    const raw=localStorage.getItem(TAB_KEY);
+    if(!raw)return;
+    const tabs=JSON.parse(raw);
+    delete tabs[TAB_ID];
+    localStorage.setItem(TAB_KEY,JSON.stringify(tabs));
+  }catch(err){}
+});
 setTimeout(async()=>{
   /* Restored here, and this block also carries the environment dump and the working-folder
      handle -- both were lost from startup by an earlier aborted patch, so the environment
