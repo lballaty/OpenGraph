@@ -1,48 +1,45 @@
-# Update → 3.37.0
+# Update → 3.40.0
 
-Nine files. Everything else in the repo is unchanged.
+Ten files. Everything else in the repo is unchanged.
 
 | file | needed? |
 |---|---|
 | `index.html` | **yes** — the app |
 | `CHANGELOG.md` | yes |
-| `tests.js` | 619 tests |
+| `tests.js` | 662 tests |
+| `checks.js` | new sweep for concat-in-a-loop |
 | `coverage.json` | **yes** — the ratchet's baseline |
 | `TEST-PLAN.md` | yes, CI diffs it |
-| `TODO.md` | records what the device data closed |
+| `TODO.md` | what the device data closed |
 | `drafting-grid.schema.json` | schema 3.35 |
-| `NAMING.md` | the file-naming convention |
+| `NAMING.md` | the naming convention |
 | `release.sh` | only if you run releases yourself |
 
-Upload all nine: `https://github.com/lballaty/OpenGraph/upload/main`
+Upload all ten: `https://github.com/lballaty/OpenGraph/upload/main`
 
-## New in this release
+## Your report decided three things
 
-**Array** — `Shift+A`, or Array on the selection bar. Across and down, spacing
-defaulting to the selection's own size so the first copy lands beside the original.
-Connectors are left out and it says so. Refused if it would add more points than the
-drawing can carry.
+**Decimation: no.** `points per pixel 2.3x` — the points are distinct, so the painting
+is not wasted. I was ready to build it; the measurement says do not, and it is not
+built.
 
-**Two diagnostics**, both able to conclude "not needed":
+**The last of the snapping cost was flattening**, not segments. 2.59ms per snap while
+the index tested 148 of 39,204 — the cost was `flattenAll`, called twice per pointer
+move over ~2,357 entities, growing its array with `concat` inside a loop. Now pushed
+and cached. Four other functions had the same shape.
 
-- **points per pixel** — whether decimation would pay. Culling cannot help here (0% of
-  entities off screen, because your points live in a few large polylines), so the real
-  question is whether the points land on distinct pixels.
-- **one-off operations** — SVG export, building a document, opening one. These run once
-  rather than per frame, so they never appeared in a frame breakdown, and anything over
-  400ms is now logged even with profiling off.
+**Storage was at 2,920KB of ~5MB** and nothing warned. Now warned at 50% and 85%.
 
-## What to send back
+## Also worth knowing
 
-One report after working on a large drawing. The line that matters:
+At 40,310 nodes your last run was **mean 1.0ms, worst 30ms, zero slow frames**. The
+slow figures were the 79,480-node file. Snapping should now be a fraction of what it
+was even there.
 
-```
-points per pixel   12.4x  (2,204 points landing on 178 distinct pixels)
-```
+## Still worth trying
 
-Above about 4x and decimation is worth building — it would be the last of the
-performance work. Near 1x and I should not build it, and painting needs a different
-answer.
-
-Also worth trying an **Export SVG** while measuring, since that path has never been
-timed on a real drawing.
+- **Create a text object** on the large drawing — the freeze fix from 3.39.0 is
+  untested.
+- **Rotate the iPad** with a drawing open — the offscreen buffer now grows on rotation.
+- An **Export SVG** while measuring. That path has still never been timed; the report
+  shows `building the document 0ms` but no export.

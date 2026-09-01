@@ -231,6 +231,16 @@
     font-family:var(--mono);font-size:12px;overflow-x:auto;scrollbar-width:none;
     padding-bottom:env(safe-area-inset-bottom,0);padding-left:env(safe-area-inset-left,0);padding-right:env(safe-area-inset-right,0)}
   #status::-webkit-scrollbar{display:none}
+  /* Pinned to the right rather than left to scroll away with the rest. The bar scrolls
+     horizontally on a narrow screen, and a version you have to scroll to find is no better
+     than one in a settings panel -- the whole point is confirming at a glance which build
+     is loaded after an upload.
+
+     margin-left:auto pushes it to the end of the flex row; sticky keeps it there while the
+     cells before it scroll underneath. */
+  #sverCell{margin-left:auto;position:sticky;right:0;background:var(--panel);
+    border-left:1px solid var(--hair);cursor:pointer}
+  #sverCell span{color:var(--dim)}
   .cell{padding:5px 10px;border-right:1px solid var(--hair);white-space:nowrap;flex:0 0 auto}
   .cell b{display:block;font-family:var(--ui);font-size:9px;letter-spacing:.14em;
     text-transform:uppercase;color:var(--dim);font-weight:600}
@@ -595,6 +605,7 @@
     <div class="cell" id="snodesCell"><b>Nodes</b><span id="snodes">—</span></div>
     <div class="cell" id="sviewCell"><b>View ▾</b><span id="sview">—</span></div>
     <div class="cell" id="slayCell"><b>Layer ▾</b><span id="slay">—</span></div>
+    <div class="cell" id="sverCell"><b>Build</b><span id="sver">—</span></div>
   </footer>
 
   <button id="fsExit" title="Leave full screen">⤡ Exit full screen</button>
@@ -1171,6 +1182,7 @@
     <button id="vBlock">Title block</button>
     <button id="vLabels">Object labels</button>
     <button id="vMeasures">Dimensions</button>
+    <button id="vBuild">Build number</button>
   </div>
 </div>
 
@@ -1284,6 +1296,7 @@ const S = {
   undoSteps:25,
   ortho:false, polar:false, pinc:15,
   showDelta:false, showGrid:true, showArea:false, gridInSvg:true, scrollPan:MACISH, segMode:false,
+  hideBuild:false,
   sel:[]
 };
 
@@ -1544,7 +1557,7 @@ function segments(all){
   const out=[];
   // Each segment is one short-lived object; the count is the pooling question's answer.
   const allocBefore=out.length;
-  for(const {o,root} of flattenAll(S.entities)){
+  for(const {o,root} of flatEntities()){
     if(!all&&!visible(root))continue;
     const ch=chainOf(o);
     if(ch)for(let i=0;i<ch.length-1;i++)out.push({a:ch[i],b:ch[i+1],e:root});
@@ -1606,14 +1619,39 @@ function dashKeyOf(o){return o.dash||(isMeasureLike(o)?"dashed":(layerOf(o).guid
 function dashOf(o){return DASHES[dashKeyOf(o)]||[];}
 function svgStrokeWidth(o){return weightMM(o).toFixed(2);}
 function svgDash(o){const a=DASHES_MM[dashKeyOf(o)]||[];return a.length?` stroke-dasharray="${a.join(",")}"`:"";}
-function flattenAll(list,root){
-  let out=[];
+/* Two things were wrong here, and together they were the last of the snapping cost.
+
+   1. `out = out.concat(...)` inside a loop allocates a new array per group and copies
+      everything built so far. For a drawing of nested groups that is quadratic.
+   2. It was called afresh on every pointer move -- twice, for circle centres and for
+      arc/text endpoints -- over about 2,357 entities. Roughly 4,700 wrapper objects
+      allocated per pointer move, which is why snapping still measured 2.59ms after the
+      index had narrowed the segment work to 148 of 39,204.
+
+   Now it pushes rather than concatenates, and the common case -- the whole of S.entities --
+   is cached against the geometry version, exactly as segments() is. */
+function flattenInto(list,root,out){
   for(const e of list){
     const r=root||e;
-    if(e.t==="group")out=out.concat(flattenAll(e.items,r));
+    if(e.t==="group")flattenInto(e.items,r,out);
     else out.push({o:e,root:r});
   }
   return out;
+}
+function flattenAll(list,root){
+  return flattenInto(list,root,[]);
+}
+let flatCache=null, flatCacheVer=-1;
+/* For S.entities only. Any other list is small or transient and not worth a cache key --
+   and a cache keyed on the wrong list would be worse than none. */
+function flatEntities(){
+  if(flatCacheVer!==geomVersion){
+    const t0=profStart("flatten rebuild");
+    flatCache=flattenInto(S.entities,null,[]);
+    flatCacheVer=geomVersion;
+    profEnd("flatten rebuild",t0);
+  }
+  return flatCache;
 }
 function objPoints(o){
   if(isMeasureLike(o))return[o.a,o.b];
@@ -1635,7 +1673,7 @@ function objPoints(o){
     const cs=Math.cos(r),sn=Math.sin(r);
     return corners.map(c=>({x:o.p.x+c.x*cs-c.y*sn,y:o.p.y+c.x*sn+c.y*cs}));
   }
-  if(o.t==="group"){let out=[];o.items.forEach(ch=>{out=out.concat(objPoints(ch));});return out;}
+  if(o.t==="group"){const out=[];o.items.forEach(ch=>{const p=objPoints(ch);for(let i=0;i<p.length;i++)out.push(p[i]);});return out;}
   return[];
 }
 function objBBox(o){
@@ -3122,14 +3160,14 @@ function snapPointInner(sp,ignore){
     /* Arcs and text have no segments, and there are few of them: a pass over top-level
        entities is a handful of items even on a drawing of 79,480 points, because those
        points live inside a few large polylines. */
-    for(const{o,root}of flattenAll(S.entities)){
+    for(const{o,root}of flatEntities()){
       if(!visible(root)||(igSet&&igSet.has(root)))continue;
       if(o.t==="arc"){const a=arcPts(o,2);add(a[0],1,"end","arc end");add(a[a.length-1],1,"end","arc end");}
       else if(o.t==="text")add(o.p,1,"end","text origin");
     }
     for(const m of S.measures){if(igSet&&igSet.has(m))continue;add(m.a,1,"end","measure end");add(m.b,1,"end","measure end");}
   }
-  if(S.snaps.center) for(const{o,root}of flattenAll(S.entities))
+  if(S.snaps.center) for(const{o,root}of flatEntities())
     if(visible(root)&&(o.t==="circle"||o.t==="arc")&&!(igSet&&igSet.has(root))) add(o.c,1,"center","centre");
   /* A midpoint can only be within tol of the pointer if the segment is, so the same
      narrowing applies -- with the tolerance widened by half the cell to be safe. */
@@ -3180,7 +3218,7 @@ function snapPointInner(sp,ignore){
        measuring would have cost more than the work it measured. */
     if(PROF.on){MEAS.snapCalls++;MEAS.segsExamined+=segs.length;MEAS.segsNear+=local.length;}
     for(const s of local) add(projOnSeg(raw,s.a,s.b).p,5,"near","on line");
-    for(const{o,root}of flattenAll(S.entities)){
+    for(const{o,root}of flatEntities()){
       if(!visible(root)||(igSet&&igSet.has(root)))continue;
       if(o.t!=="circle"&&o.t!=="arc")continue;
       const d=dist(raw,o.c);if(d<1e-9)continue;
@@ -3224,11 +3262,56 @@ function snapPointInner(sp,ignore){
 }
 
 /* ---------- render ---------- */
+/* Creating a text object froze the whole iPad for several seconds, and this is why.
+   Raising the on-screen keyboard animates the visible height over roughly 250-300ms,
+   firing resize on many frames. Each one assigned cv.width -- which reallocates the
+   screen canvas even when the value is unchanged -- and then draw() saw a size difference
+   and allocated a NEW offscreen canvas and repainted it. At this canvas size that is
+   18.6MB twice per event and 45-52ms of painting, so fifteen events meant over half a
+   gigabyte of graphics memory churned. Graphics memory is not JS heap; the OS has to find
+   it, which is why the whole device stalled rather than just the tab.
+
+   Three things wrong, all fixed here:
+     - assigning cv.width reallocates unconditionally, so it is now guarded
+     - resize ran synchronously per event, so it is coalesced to one per frame
+     - the offscreen canvas was replaced rather than reused */
+/* NOT coalesced here: debouncedResize already does that at the listener, one per frame.
+   Adding a second layer would have delayed every explicit resize() call by a frame for no
+   gain -- and I nearly shipped a duplicate `resizeScheduled` that would not even have
+   parsed. The problem was never the frequency; it was what each one allocated. */
+/* Declared here, above resize, because resize CONSULTS it: `let textEditing` sat further
+   down the file, and a temporal-dead-zone reference would have thrown the moment the
+   keyboard raised. The execution harness did not catch it because nothing in the harness
+   creates a text object -- a reminder that "the app loads cleanly" is not "every path
+   works". */
+let resizeSettle=0;
+let textEditing=false;
 function resize(){
   DPR=Math.min(window.devicePixelRatio||1,2.5);
   const r=stage.getBoundingClientRect();
-  W=Math.max(1,Math.round(r.width));H=Math.max(1,Math.round(r.height));
-  cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);draw();
+  const w=Math.max(1,Math.round(r.width)), h=Math.max(1,Math.round(r.height));
+  const pw=w*DPR, ph=h*DPR;
+  /* Assigning width or height to a canvas reallocates its backing store and clears it,
+     even when the value is identical. During a keyboard animation the width never changes
+     at all, so most of that churn was for nothing. */
+  const sized=(cv.width!==pw||cv.height!==ph);
+  W=w;H=h;
+  if(sized){cv.width=pw;cv.height=ph;}
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  /* While a text field has focus the on-screen keyboard is animating, and the canvas height
+     changes on every frame of it -- so the static key changes every frame and a full repaint
+     runs each time. At 45-52ms a piece that is most of the freeze that remains after the
+     allocation churn is gone.
+
+     Nothing needs to look right mid-animation: the canvas is being resized under the user's
+     finger and the keyboard is covering the part that moved. So the repaint is deferred to
+     one, after the height has settled. */
+  if(textEditing){
+    clearTimeout(resizeSettle);
+    resizeSettle=setTimeout(()=>{resizeSettle=0;draw();},180);
+    return;
+  }
+  draw();
 }
 /* True only for the instant a PNG is being captured. Everything it suppresses is
    editing furniture -- selection handles, the rubber band, the live preview, the snap
@@ -4000,14 +4083,25 @@ function draw(){
     if(ms1>50)PROF.slow++;
     return;
   }
-  if(statOff===false&&(!statCv||statCv.width!==cv.width||statCv.height!==cv.height)){
+  /* GROW, never shrink, and reuse. Replacing the offscreen canvas on every size change
+     meant a fresh 18.6MB allocation per resize event -- and a keyboard animation produces
+     one per frame for a third of a second. Canvas memory is graphics memory, which the OS
+     has to find; churning half a gigabyte of it is why creating a text object froze the
+     whole device rather than just the tab.
+
+     A canvas larger than the screen costs nothing to blit from, so it is kept at the
+     largest size seen and only reallocated when the screen needs more. Rotating the iPad
+     grows it once; the keyboard never does. */
+  const needW=cv.width, needH=cv.height;
+  if(statOff===false&&(!statCv||statCv.width<needW||statCv.height<needH)){
     /* An offscreen canvas of this size is a second backing store -- about 15MB at retina
        density -- and iOS can refuse to allocate one under memory pressure. If it fails, or
        if blitting it fails, the answer is to paint directly rather than to show nothing: a
        slow drawing is usable, a blank one is not. */
     try{
       const c=document.createElement("canvas");
-      c.width=cv.width;c.height=cv.height;
+      c.width=Math.max(needW,statCv?statCv.width:0);
+      c.height=Math.max(needH,statCv?statCv.height:0);
       const g=c.getContext("2d");
       if(!g)throw new Error("no 2d context");
       statCv=c;statCtx=g;statKey="";
@@ -4034,6 +4128,9 @@ function draw(){
     const t0=profStart("static rebuild");
     const mt=pnow();
     statCtx.setTransform(1,0,0,1,0,0);
+    /* Cleared over the whole buffer, not just the visible part: an oversized buffer keeps
+       stale pixels outside the screen area, and after a rotation those become visible. */
+    statCtx.clearRect(0,0,statCv.width,statCv.height);
     statCtx.scale(DPR,DPR);
     paintStatic(statCtx);
     /* Fed into the same rolling mean, so if the drawing gets lighter -- layers hidden,
@@ -4047,7 +4144,11 @@ function draw(){
   try{
     ctx.setTransform(1,0,0,1,0,0);
     ctx.clearRect(0,0,cv.width,cv.height);
-    ctx.drawImage(statCv,0,0);
+    /* Only the part that is on screen. The offscreen canvas may now be LARGER than the
+       screen -- it grows and never shrinks, so rotating the iPad leaves it oversized -- and
+       drawImage with two arguments would copy the whole thing. Source and destination
+       rectangles keep the copy to the visible area whatever size the buffer happens to be. */
+    ctx.drawImage(statCv,0,0,cv.width,cv.height,0,0,cv.width,cv.height);
     ctx.setTransform(DPR,0,0,DPR,0,0);
   }catch(err){
     /* A failed blit must not take the whole frame with it. Fall back permanently: if it
@@ -4167,7 +4268,7 @@ function pathOf(g,e){
    NOT one of the blocking modals -- it needs no scrim, and the canvas underneath is
    the point. Commits on Enter or blur, discards on Escape, and ignores an empty or
    whitespace-only entry so a stray tap cannot leave an invisible object behind. */
-let textEditing=false;
+// declared above resize(), which consults it
 /* allowEmpty distinguishes creating from editing. Emptying the box and confirming is how
    anyone removes a label, and it silently did nothing: the guard treated an empty entry as
    a mis-tap, which is right for a NEW object and wrong for an existing one. */
@@ -4797,7 +4898,7 @@ function handleAt(sp){
 }
 function samplePts(o){
   if(isMeasureLike(o))return[o.a,o.b,{x:(o.a.x+o.b.x)/2,y:(o.a.y+o.b.y)/2}];
-  if(o.t==="group"){let out=[];o.items.forEach(ch=>{out=out.concat(samplePts(ch));});return out;}
+  if(o.t==="group"){const out=[];o.items.forEach(ch=>{const p=samplePts(ch);for(let i=0;i<p.length;i++)out.push(p[i]);});return out;}
   const ch=chainOf(o),out=[];
   if(ch){for(let i=0;i<ch.length-1;i++)for(let k=0;k<=8;k++)
     out.push({x:ch[i].x+(ch[i+1].x-ch[i].x)*k/8,y:ch[i].y+(ch[i+1].y-ch[i].y)*k/8});
@@ -5291,7 +5392,9 @@ function mergeGroup(){
 function styleTargets(){
   let out=[];
   S.sel.forEach(o=>{
-    if(o.t==="group")out=out.concat(flattenAll(o.items).map(x=>x.o));
+    /* Same fault as flattenAll had: concat in a loop allocates and copies per group. And
+       the .map() built a second array only to discard the wrappers. */
+    if(o.t==="group")flattenInto(o.items,null,[]).forEach(x=>out.push(x.o));
     else out.push(o);
   });
   return out;
@@ -5474,7 +5577,7 @@ function pasteClipboard(){
 const EPS=1e-6;
 function vertsOf(o){
   if(isMeasureLike(o))return[o.a,o.b];
-  if(o.t==="group"){let out=[];o.items.forEach(ch=>{out=out.concat(vertsOf(ch));});return out;}
+  if(o.t==="group"){const out=[];o.items.forEach(ch=>{const p=vertsOf(ch);for(let i=0;i<p.length;i++)out.push(p[i]);});return out;}
   const ch=chainOf(o);if(ch)return ch;
   if(o.t==="circle")return[o.c];
   if(o.t==="arc"){const a=arcPts(o,2);return[o.c,a[0],a[a.length-1]];}
@@ -7171,6 +7274,48 @@ function printSheet(){
    backs the same interface when window.storage isn't there. Private mode with storage
    blocked still degrades to no persistence, and still says so. */
 const DOC_PREFIX="dg:doc:", UI_KEY="dg:ui", LEGACY_UI_KEY="dg:__ui";
+/* Storage pressure. A real log showed 2,920KB of roughly 5MB used -- 58% -- where it had
+   been 172KB the same morning, because a drawing had been saved into it. Nothing warned:
+   the figure appeared only in the environment dump, which nobody reads until a write has
+   already failed. And when it does fail, what fails is saving a symbol set, a template, or
+   the autosave -- work already done, lost at the moment of keeping it.
+
+   So it is measured after each write and said once per session at 70%, again at 90%. */
+const STORE_BUDGET_BYTES=5*1024*1024;
+let storeWarned=0;
+function storageBytesUsed(){
+  try{
+    if(typeof localStorage==="undefined")return 0;
+    let n=0;
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(!k||!k.startsWith("dg:"))continue;
+      n+=(k.length+((localStorage.getItem(k)||"").length))*2;   // two bytes per character
+    }
+    return n;
+  }catch(err){return 0;}
+}
+function checkStoragePressure(){
+  const used=storageBytesUsed();
+  if(!used)return;
+  const pct=used/STORE_BUDGET_BYTES;
+  /* 50% and 85%, not 70% and 90%. A real log sat at 2,920KB of 5MB -- 57% -- which is
+     over half the budget consumed by one saved drawing, and plainly worth knowing about;
+     my 70% threshold would have said nothing. Half full is the point at which the next
+     drawing may not fit, which is the decision the warning is for. */
+  const level=pct>=0.85?2:pct>=0.5?1:0;
+  if(level<=storeWarned)return;
+  storeWarned=level;
+  const mb=(used/1048576).toFixed(1);
+  logLine("browser storage "+Math.round(pct*100)+"% full ("+mb+"MB of about 5MB)","warn");
+  note(level===2
+    ? "The browser's storage is nearly full ("+mb+"MB of about 5MB). Saving a drawing, "+
+      "symbol set or template may fail. Export what you need to files, then delete "+
+      "drawings you no longer keep here."
+    : "The browser's storage is "+Math.round(pct*100)+"% full ("+mb+"MB of about 5MB). "+
+      "Drawings saved in the browser are the usual reason \u2014 Save to a file instead where "+
+      "you can.");
+}
 const PERF_KEY="dg:perf";      // the last few performance reports, kept out of the capped log
 let profReports=[];
 const STATS_KEY="dg:stats";   // usage counts: about the person, not the sheet, so kept out of doc()
@@ -7184,8 +7329,8 @@ const LIB_PREFIX="dg:lib:";   // one key per named library, so sets stay separab
    you have to remember -- and several builds shipped on the same date anyway, so neither
    answered "which copy am I looking at". A content hash cannot drift: two files showing
    the same one ARE the same file. */
-const APP_NAME="Drafting Grid", APP_VERSION="3.37.0", APP_BUILD="2026-08-29";
-const APP_HASH="a51feb46";
+const APP_NAME="Drafting Grid", APP_VERSION="3.40.0", APP_BUILD="2026-08-29";
+const APP_HASH="60226e97";
 const AUTO_KEY="dg:auto";
 const APP_DOC="drafting-grid";
 const LAYER_APP="drafting-grid-layer";   // one layer and its contents, as a file
@@ -7254,9 +7399,22 @@ const RAW_STORE=STORE;
 const STORE_WRAPPED=RAW_STORE&&{
   get:async(k,sh)=>{try{return await RAW_STORE.get(k,sh);}
     catch(e){logLine("storage get failed for \u201c"+k+"\u201d: "+((e&&e.message)||e),"error");throw e;}},
-  set:async(k,v,sh)=>{try{return await RAW_STORE.set(k,v,sh);}
+  set:async(k,v,sh)=>{try{
+      const r=await RAW_STORE.set(k,v,sh);
+      /* Checked after a write rather than before: a write is when the total changes, and
+         measuring beforehand would miss the one that crossed the line. Cheap because it
+         only sums key and value lengths, and the check itself is throttled by the
+         once-per-level rule. */
+      checkStoragePressure();
+      return r;
+    }
     catch(e){logLine("storage set failed for \u201c"+k+"\u201d ("+
-      Math.round(String(v).length/1024)+"KB): "+((e&&e.message)||e),"error");throw e;}},
+      Math.round(String(v).length/1024)+"KB): "+((e&&e.message)||e),"error");
+      /* A refused write is the thing the warning exists to prevent, so if it happens
+         anyway, say so plainly rather than only in the log. */
+      note("The browser refused to save that \u2014 its storage is full. Export what you need "+
+        "to files, then delete drawings you no longer keep in the browser.");
+      throw e;}},
   delete:async(k,sh)=>{try{return await RAW_STORE.delete(k,sh);}
     catch(e){logLine("storage delete failed for \u201c"+k+"\u201d: "+((e&&e.message)||e),"error");throw e;}},
   list:async(p,sh)=>{try{return await RAW_STORE.list(p,sh);}
@@ -10954,7 +11112,11 @@ function floatBar(n,on){
    about how your toolbars stand up, not about the plan. Moved here, so a shared file no
    longer reaches across and rearranges someone else's bars. */
 function uiState(){return{keys:KEYS,bars:BARS,fs:immersive,order:barOrder,icons:ICONS_USER,hues:HUES_USER,hidden:hiddenCmds,
-  vertIcons:S.vertIcons,vertSwap:S.vertSwap,tplWorkspace:S.tplWorkspace,logLevel:logLevel};}
+  vertIcons:S.vertIcons,vertSwap:S.vertSwap,tplWorkspace:S.tplWorkspace,logLevel:logLevel,
+  /* In the WORKSPACE rather than the drawing: whether you want to see the build number is
+     about you and this browser, not about the sheet. Saving it in the document would carry
+     your preference to anyone you sent the file to. */
+  hideBuild:S.hideBuild};}
 async function saveUI(){
   if(!hasStore)return;
   try{await STORE_WRAPPED.set(UI_KEY,JSON.stringify(uiState()),false);}catch(err){}
@@ -10969,6 +11131,12 @@ function applyUI(o){
   if(o.vertIcons!==undefined)S.vertIcons=!!o.vertIcons;
   if(o.vertSwap!==undefined)S.vertSwap=!!o.vertSwap;
   if(o.tplWorkspace!==undefined)S.tplWorkspace=!!o.tplWorkspace;
+  if(o.hideBuild!==undefined){
+    S.hideBuild=!!o.hideBuild;
+    /* Applied here as well as stored: the cell is in the markup from the start, so without
+       this it would flash into view on every load before the preference took effect. */
+    if($("sverCell"))$("sverCell").style.display=S.hideBuild?"none":"";
+  }
   if(o.icons&&typeof o.icons==="object")ICONS_USER=o.icons;
   if(o.hidden&&typeof o.hidden==="object")hiddenCmds=o.hidden;
   if(o.hues&&typeof o.hues==="object")HUES_USER=o.hues;
@@ -11342,6 +11510,15 @@ $("gpUniform").onclick=()=>{
   gridPopUI();syncUI();draw();
 };
 $("gpMore").onclick=()=>{toggleGridPop(false);togglePanel(true);};
+/* The build cell can be hidden like every other status cell. It earns its place while
+   uploads are being confirmed and becomes clutter once they are not, and it would be odd
+   for the one cell you cannot turn off to be the one about the app rather than the drawing.
+   Saved with the workspace, so the choice sticks. */
+$("vBuild").onclick=()=>{
+  S.hideBuild=!S.hideBuild;
+  $("sverCell").style.display=S.hideBuild?"none":"";
+  viewPopUI();saveUI();draw();
+};
 $("sviewCell").onclick=()=>toggleViewPop();
 $("vGrid").onclick=()=>{S.showGrid=!S.showGrid;if($("showGrid"))$("showGrid").checked=S.showGrid;viewPopUI();draw();};
 $("vSheet").onclick=()=>{
@@ -12102,6 +12279,7 @@ function countNodes(list,visibleOnly){
   return n;
 }
 let nodeVisible=0,nodeHidden=0,nodeTotalVer=-1;
+let verCellDone=false;   // the cell is filled once; its visibility is a separate question
 /* Counts only what is on a VISIBLE layer, because that is what the app processes.
    Everything hidden is skipped by both hot paths:
 
@@ -12127,6 +12305,17 @@ function nodesCached(){nodesUI();}
 function nodesUI(){
   const cell=$("snodesCell"), out=$("snodes");
   if(!out)return;
+  /* Set once rather than per frame: it cannot change while the page is loaded, and writing
+     the same string 60 times a second is the kind of pointless DOM work the status bar was
+     just cleaned of. */
+  if(!verCellDone&&$("sver")){
+    verCellDone=true;
+    $("sver").textContent=APP_VERSION+" \u00b7 "+APP_HASH;
+    $("sverCell").title="Build "+APP_VERSION+" ("+APP_HASH+"). The hash is computed from "+
+      "the file's own contents, so it changes with every edit \u2014 it is the reliable way to "+
+      "tell whether the copy you are looking at is the one you uploaded. Tap for details.";
+    $("sverCell").onclick=()=>{togglePanel(true);aboutUI();};
+  }
   const total=nodesTotal();          // visible only
   const sel=S.sel.length?countNodes(S.sel):0;
   out.textContent=S.sel.length
@@ -12167,6 +12356,7 @@ function viewPopUI(){
   set("vBlock",sheetOn&&S.sheet.block,"Title block");
   set("vLabels",!S.hideLabels,"Object labels");
   set("vMeasures",!S.hideMeasures,"Dimensions");
+  set("vBuild",!S.hideBuild,"Build number");
   // The title block sits inside the border, so it cannot be shown without it.
   $("vBlock").disabled=!sheetOn;
   $("vBlock").style.opacity=sheetOn?"":"0.45";
@@ -12175,6 +12365,7 @@ function viewPopUI(){
   if(!sheetOn)off.push("no sheet");
   if(S.hideLabels)off.push("no labels");
   if(S.hideMeasures)off.push("no dims");
+  if(S.hideBuild)off.push("no build");
   $("sview").textContent=off.length?off.join(", "):"all on";
 }
 function toggleLayerPop(open,mode){

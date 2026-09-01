@@ -1,6 +1,6 @@
 # Test plan
 
-Generated from `index.html` — version **3.37.0**, build **`a51feb46`**.
+Generated from `index.html` — version **3.40.0**, build **`60226e97`**.
 Regenerate with `node testplan.js index.html > TEST-PLAN.md` after any change.
 
 Automated coverage is in `tests.js` (`node tests.js`). Everything below needs a real
@@ -313,6 +313,7 @@ stays open deliberately).
 | Title block | button | tap it; it acts and does not throw |  |
 | Object labels | button | tap it; it acts and does not throw |  |
 | Dimensions | button | tap it; it acts and does not throw |  |
+| Build number | button | tap it; it acts and does not throw |  |
 
 Also: **Escape** closes it, and a tap outside closes it (except the Ask panel, which
 stays open deliberately).

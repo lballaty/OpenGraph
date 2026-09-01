@@ -4,6 +4,127 @@ The **This build** line in Settings → About is a hash of the file's own conten
 Two copies showing the same one are the same file. Use it to tell builds apart —
 the version number alone will not, since several ship on the same date.
 
+## 3.40.0 — 2026-09-01 · build `60226e97`
+
+### Decimation: the answer was no
+```
+points per pixel  2.3x  (4,079 points on 1,785 distinct pixels)
+   → the points are distinct; decimation would only lose detail
+```
+
+I was ready to build it on the strength of "painting is the dominant cost". The
+diagnostic says the painting is not wasted, so it is **not built**. That is the
+whole point of a measurement that can conclude no.
+
+Same report: at 40,310 nodes the app is now **mean 1.0ms, worst 30ms, zero slow
+frames**. The 23ms means and 47 slow frames were the 79,480-node file.
+
+### The last of the snapping cost was flattening
+Snapping still measured 2.59ms per call while the index had narrowed the segment
+work to **148 of 39,204**. Testing 148 segments cannot cost that, so the cost was
+elsewhere — and the report held the clue: *"0 of 63,648"* entity checks over 27
+rebuilds is about **2,357 entities**, not the handful I had assumed.
+
+`flattenAll` was called twice per pointer move over all of them, and it grew its
+result with `out = out.concat(...)` **inside a loop** — a new array per group,
+copying everything built so far. Measured at 4.7× slower than pushing into one
+array, and quadratic on nested groups.
+
+Now it pushes, and the whole-drawing case is **cached against the geometry version**
+as `segments()` is. Four other functions had the identical shape and are fixed too.
+`checks.js` sweeps for it.
+
+### Storage pressure is warned about
+A real log showed **2,920KB of roughly 5MB** used, where it had been 172KB the same
+morning — a saved drawing had gone in. Nothing warned: the figure appeared only in
+the environment dump, which nobody reads until a write has already failed. And what
+fails is saving a symbol set, a template or the autosave — work already done, lost at
+the moment of keeping it.
+
+Now checked after every write, said once at **50%** and again at **85%**, with the
+figure and what to do. A refused write says so in the UI rather than only the log.
+
+I first chose 70%, which would have said **nothing** about that 57% reading. Half
+full is the point at which the next drawing may not fit, which is the decision the
+warning is for — the test is what caught that.
+
+### And the sweep read its own documentation
+The new `concat` check reported a fifth site: the comment *describing* the fault, in
+the function that no longer has it. Comments are stripped first now. Fourth time this
+session a check has read prose instead of code.
+
+662 tests.
+
+## 3.39.0 — 2026-09-01 · build `67030f84`
+
+### Creating a text object froze the whole iPad
+Raising the on-screen keyboard animates the visible height over roughly 250–300ms,
+firing `resize` on every frame of it. Each one:
+
+- **reallocated the screen canvas** — assigning `cv.width` reallocates the backing
+  store even when the value is identical, and during a keyboard animation the width
+  never changes at all
+- **allocated a brand new offscreen canvas**, because the size test replaced it rather
+  than reusing it
+- **repainted the whole drawing**, 45–52ms at this size
+
+At 18.6MB per canvas that is roughly **560MB of graphics memory churned** across a
+single keyboard raise. Graphics memory is not the JS heap — the OS has to find it,
+which is why the whole device stalled rather than just the tab.
+
+Three fixes:
+
+- The canvas is only reassigned when its size **actually changed**.
+- The offscreen canvas **grows and is reused**, never replaced. A buffer larger than
+  the screen costs nothing to blit from, so rotating grows it once and the keyboard
+  never does. The blit now names its source and destination rectangles, since a
+  two-argument `drawImage` would copy an oversized buffer whole.
+- While a text field has focus the repaint is **deferred to one**, after the height
+  settles. Nothing needs to look right mid-animation — the keyboard is covering the
+  part that moved.
+
+### Three things I got wrong on the way
+- I added a second layer of resize coalescing without checking: `debouncedResize`
+  already does it at the listener. My duplicate `resizeScheduled` **would not have
+  parsed**.
+- I moved `textEditing` into `resize`'s condition while its `let` sat 1,000 lines
+  further down — a temporal-dead-zone reference that would have thrown the moment the
+  keyboard raised. **The execution harness did not catch it**, because nothing in the
+  harness creates a text object. "The app loads cleanly" is not "every path works".
+- Three tests then failed against correct code, because they read a function name I
+  had introduced and removed in the same session.
+
+642 tests.
+
+## 3.38.0 — 2026-09-01 · build `e8d7c7d3`
+
+### The build number is in the status bar
+Right-hand end of the bottom bar:
+
+```
+Build  3.38.0 · <hash>
+```
+
+Both, because they answer different questions: the version says which release, the
+hash says which **file** — it is computed from the file's own contents, so it changes
+with every edit. After an upload, the hash is the only thing that proves the copy
+being served is the one you pushed.
+
+- **Pinned to the right**, not left to scroll away. The bar scrolls horizontally on a
+  narrow screen, and a version you have to scroll to find is no better than one buried
+  in a panel.
+- Set **once** rather than every frame; it cannot change while the page is loaded.
+- Tap it for the full details.
+- **Hideable from View**, like every other status cell — it earns its place while
+  uploads are being confirmed and becomes clutter afterwards, and it would be odd for
+  the one cell you cannot turn off to be the one about the app rather than the drawing.
+
+The preference is saved with the **workspace**, not the drawing: whether you want to
+see a build number is about you and this browser, and storing it in the document would
+carry it to whoever you sent the file to.
+
+631 tests.
+
 ## 3.37.0 — 2026-09-01 · build `a51feb46`
 
 ### Array — repeat a selection at a spacing

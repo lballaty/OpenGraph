@@ -637,6 +637,151 @@ G("Tab tracking");
     /setInterval\(beatTab,TAB_BEAT_MS\)/.test(srcAll));
 }
 
+// ---------- flattening the drawing ----------
+G("Flattening");
+{
+  /* The last of the snapping cost. Snapping measured 2.59ms per call while the index had
+     narrowed the segment work to 148 of 39,204 -- testing 148 segments cannot cost that, so
+     the cost was elsewhere. The report held the clue: "0 of 63,648" entity checks over 27
+     rebuilds is about 2,357 entities, not the handful I had assumed. */
+  ok("flattening pushes into one array",/function flattenInto/.test(srcAll));
+  ok("it does not concat in a loop",!/out=out\.concat\(flattenAll/.test(srcAll),
+    "a new array per group, copying everything built so far \u2014 quadratic on nested groups");
+  ok("the whole-drawing case is cached",/function flatEntities/.test(srcAll));
+  ok("keyed on the geometry version",/flatCacheVer!==geomVersion/.test(codeOf("flatEntities")));
+  ok("and only for S.entities",/flattenInto\(S\.entities,null,\[\]\)/.test(codeOf("flatEntities")),
+    "a cache keyed on the wrong list would be worse than none");
+  ok("the per-move paths use the cache",
+    /flatEntities\(\)/.test(codeOf("snapPointInner")));
+  // the arithmetic, since the concat fix is not merely tidier
+  const into=(list,root,out)=>{for(const e of list){const r=root||e;
+    if(e.t==="group")into(e.items,r,out);else out.push({o:e,root:r});}return out;};
+  const oldWay=(list,root)=>{let out=[];for(const e of list){const r=root||e;
+    if(e.t==="group")out=out.concat(oldWay(e.items,r));else out.push({o:e,root:r});}return out;};
+  const ents=[];
+  for(let g=0;g<200;g++){const items=[];for(let i=0;i<8;i++)items.push({t:"poly",p:[]});
+    ents.push({t:"group",items});}
+  ok("both produce the same list",into(ents,null,[]).length===oldWay(ents,null).length,
+    "faster and different would be a bug, not an optimisation");
+  ok("nesting is preserved",
+    into([{t:"group",items:[{t:"group",items:[{t:"poly",p:[]}]}]}],null,[]).length===1);
+  ok("the root is carried through nesting",
+    into([{t:"group",items:[{t:"poly",p:[]}]}],null,[])[0].root.t==="group",
+    "the root is what layer and lock checks consult");
+}
+
+// ---------- storage pressure ----------
+G("Storage pressure");
+{
+  /* A real log showed 2,920KB of roughly 5MB used -- 58% -- where it had been 172KB the
+     same morning. Nothing warned: the figure appeared only in the environment dump, which
+     nobody reads until a write has already failed. And what fails is saving a symbol set,
+     a template or the autosave: work already done, lost at the moment of keeping it. */
+  const cs=codeOf("checkStoragePressure");
+  ok("pressure is checked",!!cs);
+  ok("at 50% and again at 85%",/pct>=0\.85\?2:pct>=0\.5\?1:0/.test(cs));
+  ok("each level speaks once",/if\(level<=storeWarned\)return/.test(cs),
+    "a message per write is the noise this app has produced three times already");
+  ok("it names the figure",/MB of about 5MB/.test(cs));
+  ok("and says what to do",/Export what you need/.test(cs));
+  ok("it is checked after a write, not before",
+    /checkStoragePressure\(\)/.test(srcAll)&&
+    /const r=await RAW_STORE\.set\(k,v,sh\)[\s\S]{0,400}checkStoragePressure/.test(srcAll),
+    "a write is when the total changes; measuring first would miss the one that crossed");
+  ok("a refused write says so in the UI, not only the log",
+    /The browser refused to save that/.test(srcAll),
+    "that refusal is the thing the warning exists to prevent");
+  // the thresholds, as behaviour
+  /* The thresholds moved because of this test. 2,920KB of 5MB is 57%, and my first choice
+     of 70% would have said nothing about a budget already more than half consumed by one
+     saved drawing. Half full is when the NEXT drawing may not fit, which is the decision
+     the warning exists to inform. */
+  const level=u=>u>=0.85?2:u>=0.5?1:0;
+  ok("172KB of 5MB warns about nothing",level(0.034)===0);
+  ok("2,920KB of 5MB warns",level(2920/5120)===1,String(level(2920/5120)));
+  ok("4,700KB of 5MB warns harder",level(4700/5120)===2);
+  ok("the source uses those thresholds",/pct>=0\.85\?2:pct>=0\.5\?1:0/.test(cs));
+}
+
+// ---------- the keyboard must not freeze the device ----------
+G("Resize during a keyboard animation");
+{
+  /* Creating a text object froze the whole iPad for several seconds. Raising the on-screen
+     keyboard animates the visible height over roughly 250-300ms, firing resize on every
+     frame -- and each one reallocated the screen canvas, allocated a NEW offscreen canvas,
+     and repainted. At this canvas size that is 18.6MB twice per event plus 45-52ms, so
+     fifteen events churned over half a gigabyte of GRAPHICS memory, which the OS has to
+     find. Hence the whole device stalling rather than just the tab. */
+  /* resizeNow was a function I introduced and then removed when dropping the duplicate
+     coalescing; the logic lives in resize() itself. The tests were reading a name that no
+     longer existed and reported three faults in correct code. */
+  const rn=codeOf("resize");
+  ok("the canvas is not reallocated when its size is unchanged",
+    /const sized=\(cv\.width!==pw\|\|cv\.height!==ph\)/.test(rn)&&/if\(sized\)/.test(rn),
+    "assigning width reallocates the backing store even for an identical value");
+  ok("resize is not coalesced twice",
+    (srcAll.match(/let resizeScheduled/g)||[]).length===1,
+    "debouncedResize already does it at the listener; a second layer would delay every call");
+  ok("the repaint is deferred while a text field has focus",
+    /if\(textEditing\)\{[\s\S]{0,200}resizeSettle/.test(rn),
+    "nothing needs to look right mid-animation: the keyboard covers the part that moved");
+  ok("and it does eventually repaint",/resizeSettle=0;draw\(\)/.test(rn));
+  ok("textEditing is declared before resize consults it",
+    srcAll.indexOf("let textEditing")<srcAll.indexOf("function resize()"),
+    "a temporal-dead-zone reference would throw the moment the keyboard raised");
+
+  /* The offscreen canvas grows and is reused rather than replaced. */
+  const dr=codeOf("draw");
+  ok("the offscreen canvas is only reallocated when it is too SMALL",
+    /statCv\.width<needW\|\|statCv\.height<needH/.test(dr),
+    "a buffer larger than the screen costs nothing to blit from");
+  ok("and it grows rather than shrinking to fit",
+    /Math\.max\(needW,statCv\?statCv\.width:0\)/.test(dr),
+    "rotating grows it once; the keyboard never does");
+  /* Which means the blit must name its rectangles. */
+  ok("the blit copies only the visible region",
+    /drawImage\(statCv,0,0,cv\.width,cv\.height,0,0,cv\.width,cv\.height\)/.test(dr),
+    "two-argument drawImage would copy an oversized buffer whole");
+  ok("the whole buffer is cleared before a rebuild",
+    /clearRect\(0,0,statCv\.width,statCv\.height\)/.test(dr),
+    "stale pixels outside the screen area become visible after a rotation");
+  // the arithmetic that made it a device-wide freeze
+  const mb=(1366*2)*(892*2)*4/1048576;
+  ok("one canvas at this size is about 19MB",Math.round(mb)===19,Math.round(mb)+"MB");
+  ok("fifteen resize events would have churned over 500MB",mb*2*15>500,
+    "graphics memory, not JS heap");
+}
+
+// ---------- build number in the status bar ----------
+G("Build number cell");
+{
+  const css=srcAll.slice(0,srcAll.indexOf("</style>"));
+  ok("there is a status bar cell for it",/id="sverCell"/.test(srcAll));
+  ok("it shows the version AND the hash",
+    /APP_VERSION\+" \\u00b7 "\+APP_HASH/.test(srcAll),
+    "the version says which release; the hash says which FILE, which is what an upload needs");
+  /* The bar scrolls horizontally on a narrow screen, so a trailing cell can be pushed out
+     of sight -- and a version you have to scroll to find is no better than one in a panel. */
+  ok("it is pinned rather than left to scroll away",
+    /#sverCell\{margin-left:auto;position:sticky/.test(css));
+  ok("it is set once, not every frame",/if\(!verCellDone/.test(srcAll),
+    "it cannot change while the page is loaded");
+  ok("tapping it opens the details",/togglePanel\(true\);aboutUI\(\)/.test(srcAll));
+  ok("the tooltip explains what the hash is for",
+    /changes with every edit/.test(srcAll));
+  /* Hideable, like every other status cell. */
+  ok("it can be turned off from View",/id="vBuild"/.test(srcAll));
+  ok("the toggle reflects its state",/set\("vBuild",!S\.hideBuild/.test(srcAll));
+  ok("and the View cell says when it is off",/off\.push\("no build"\)/.test(srcAll));
+  /* In the workspace, not the drawing: it is about this browser, not the sheet. */
+  ok("the preference is saved with the workspace",/hideBuild:S\.hideBuild/.test(codeOf("uiState")));
+  ok("not with the drawing",!/hideBuild:S\.hideBuild/.test(codeOf("doc")),
+    "sending a file should not carry your preference to whoever opens it");
+  ok("it is applied on restore, not just stored",
+    /\$\("sverCell"\)\.style\.display=S\.hideBuild/.test(srcAll),
+    "the cell is in the markup from the start, so it would flash into view on every load");
+}
+
 // ---------- array ----------
 G("Array");
 {

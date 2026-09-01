@@ -111,6 +111,19 @@ check("a canvas tap dismisses rather than being swallowed",
   /if\(anyBlockingModal\(\)\)\{closeBlockingModals\(\);return;\}/.test(src),
   "returning silently left no way to close by tapping");
 
+// --- no array concat inside a loop ------------------------------------------
+/* out = out.concat(x) inside a loop allocates a new array and copies everything built so
+ * far on each pass. flattenAll did it and was called twice per pointer move over ~2,357
+ * entities, which was most of what remained of the snapping cost. Four other functions had
+ * the same shape. A sweep finds the fifth. */
+/* Comments stripped first: the sweep matched the comment that DESCRIBES the fault, in the
+ * function that no longer has it. The fifth failure it reported was its own documentation
+ * -- the fourth time this session a check has read prose instead of code. */
+const srcNoComments=src.replace(/\/\*[\s\S]*?\*\//g,"").replace(/\/\/[^\n]*/g,"");
+const concatLoops=[...srcNoComments.matchAll(/out\s*=\s*out\.concat\(/g)].length;
+check("no function grows an array with concat in a loop",concatLoops===0,
+  concatLoops+" site(s) — push into one array instead");
+
 // --- storage keys are all reserved ------------------------------------------
 /* The migration that once destroyed the symbol sets and templates did it by treating any
    unlisted dg: key as a stray drawing. So a new internal key that is not added to
