@@ -779,6 +779,196 @@ G("Bounding boxes and culling");
     "most of the culling saving handed back to cover a label that could be measured");
 }
 
+// ---------- placing symbols ----------
+G("Symbols panel");
+{
+  /* Four things, all reported. The drag genuinely was broken. */
+
+  /* 1. The scroll gate threw away most drags. It was |dy| > |dx|, so ANY gesture aimed
+        below the symbol was read as a scroll -- and from a panel down the side of the
+        screen, most of the sheet is below. */
+  const gate=(dx,dy)=>Math.abs(dy)>Math.abs(dx)*2.5;
+  ok("a steep drag towards the sheet is a drag",!gate(-60,120),
+    "the old test abandoned this as a scroll");
+  ok("a gentle one too",!gate(-120,60));
+  ok("but a flick down the list still scrolls",gate(0,200));
+  ok("and a near-vertical drag scrolls",gate(-6,150));
+  ok("the source uses the wider cone",/Math\.abs\(dy\)>Math\.abs\(dx\)\*2\.5/.test(srcAll));
+
+  /* 2. The list showed names only. A name says what someone called it; a thumbnail says
+        what it IS, and thirty schematic parts are unusable from names. */
+  ok("each symbol gets a thumbnail",/function symThumb/.test(srcAll));
+  const st=codeOf("symThumb");
+  ok("drawn with the real renderer",/drawEntity\(g,o,false\)/.test(st),
+    "a separate preview renderer would slowly disagree with the sheet");
+  ok("scaled to the symbol's own extent",/Math\.min\(\(THUMB\*2-pad\*2\)\/w/.test(st));
+  ok("at twice the size for a sharp result",/c\.width=THUMB\*2/.test(st));
+  ok("and the view is always restored",/finally\{/.test(st),
+    "a thumbnail that threw could have left the app looking at a 40-pixel view");
+  ok("ctx is not touched",!/ctx=g/.test(st),
+    "it is a const, and drawEntity takes its context as an argument anyway");
+
+  /* 3. The Place button was a second target for what the row is already about. */
+  ok("the row itself arms the symbol",/row\.onclick=ev=>\{/.test(srcAll));
+  ok("the Place button is gone",!/textContent="Place"/.test(srcAll));
+  ok("and it is not still being appended",!/row\.append\(nm,dim,place\)/.test(srcAll),
+    "the append outlived the definition and would have thrown on the first symbol");
+  ok("a tap on Rename or Delete does not arm",/ev\.target\.closest\("button"\)\)return/.test(srcAll),
+    "arming on the way past would be worse than an extra button");
+
+  /* 4. Whether the panel closes is a choice, and it belongs on the panel. */
+  ok("there is a keep-open setting",/id="symStay"/.test(srcAll));
+  ok("on the panel, not in Settings",
+    srcAll.indexOf('id="symStay"')<srcAll.indexOf('id="symNote"'),
+    "one symbol wants the panel gone, thirty want it to stay");
+  ok("and it is honoured",/if\(!S\.symStay\)toggleSymbols\(false\)/.test(srcAll));
+  ok("saved with the workspace",/symStay:S\.symStay/.test(codeOf("uiState")));
+  ok("and reflected when the panel opens",/\$\("symStay"\)\.checked=!!S\.symStay/.test(srcAll));
+}
+
+// ---------- a bar position survives a rotation ----------
+G("Bar position per orientation");
+{
+  /* Reported: rotating to portrait and back does not put the bars where they were. One x
+     and one y meant the rotation CLAMPED them to fit the new shape and overwrote the
+     choice -- so the position was destroyed on the way out, not on the way back, and
+     rotating home found the clamped number. */
+  ok("position is keyed on orientation",/const orientKey=\(\)=>innerWidth>=innerHeight/.test(srcAll));
+  ok("there is a slot per orientation",/function rememberBarPlace/.test(srcAll)&&
+    /function restoreBarPlace/.test(srcAll));
+  ok("recorded when a bar is dropped",/rememberBarPlace\(n\);\s*saveUI\(\)/.test(srcAll));
+  ok("and after a deliberate fit",/rememberBarPlace\(n\);\s*\}/.test(codeOf("fitBar")),
+    "or the next rotation would restore a slot from before the fit and undo it");
+  ok("restored before the clamp, not after",
+    /restoreBarPlace\(n\);\s*const el=/.test(codeOf("reclampFloatingBars")),
+    "the clamp must work from this orientation's numbers");
+  ok("size travels with the position",/if\(slot\.w\)B\.w=slot\.w/.test(srcAll),
+    "a standing bar fitted for one orientation is the wrong height for the other");
+  ok("saved with the workspace",/barPlace:barPlace/.test(codeOf("uiState")));
+  ok("and a stored NaN is rejected",/isFinite\(v\[k\]\)/.test(srcAll),
+    "a bar you cannot see is worse than one in the wrong place");
+
+  /* The behaviour, tested as logic. The DOM harness cannot judge positions -- jsdom gives
+     every element a zero rect, which pinned the bar to the corner and earlier made the
+     scale bar appear at y=-23. So this asserts the slot arithmetic directly. */
+  const slots={};
+  const key=(W,H)=>W>=H?"land":"port";
+  const remember=(k,n,p)=>{slots[k]=slots[k]||{};slots[k][n]=p;};
+  const restore=(k,n)=>(slots[k]||{})[n]||null;
+  const clamp=(p,box,w)=>({x:Math.max(box.l,Math.min(p.x,box.r-Math.min(80,w))),y:p.y});
+  ok("landscape and portrait are different keys",key(1366,892)!=="Bkey"&&key(1366,892)==="land"
+    &&key(1024,1300)==="port");
+  remember("land",2,{x:1180,y:60});
+  remember("port",2,clamp({x:1180,y:60},{l:0,r:1024},180));
+  remember("port",2,{x:820,y:200});
+  ok("landscape keeps what was set there",restore("land",2).x===1180);
+  ok("portrait keeps its own",restore("port",2).x===820);
+  ok("and neither overwrites the other",
+    restore("land",2).x!==restore("port",2).x,
+    "which is exactly what one shared slot did");
+}
+
+// ---------- a standing bar keeps its edge ----------
+G("Standing bar position on reload");
+{
+  /* Reported: on reload the right-hand bar comes back away from the side of the screen.
+     fitBar measures the buttons and resets B.w -- and the saved x was chosen for the OLD
+     width, so a bar flush against the right edge ended up inboard by the difference. */
+  const fb=codeOf("fitBar");
+  ok("x is re-derived after fitting",/B\.x=vertX\(n\)/.test(fb),
+    "the saved x belongs to the old width");
+  ok("vertX answers for the correct side",/S\.vertSwap/.test(srcAll),
+    "left or right depending on the handedness setting");
+  ok("it existed already and was simply not called",
+    srcAll.indexOf("const vertX=")<srcAll.indexOf("function fitBar"));
+  /* And the fit must happen on LOAD, not only on resize. */
+  ok("standing bars are fitted on load",
+    /if\(BARS\[n\]&&BARS\[n\]\.float&&BARS\[n\]\.vert\)fitBar\(n\)/.test(srcAll),
+    "sizes were saved for a button set that has since grown");
+  ok("on the next frame",/requestAnimationFrame\(\(\)=>\{\s*\[1,2\]\.forEach/.test(srcAll),
+    "a bar has no measurable width until it is laid out");
+  // the arithmetic of the shift
+  const rightEdge=(stageR,w)=>stageR-w;
+  ok("a wider bar sits further left to stay flush",rightEdge(1366,200)<rightEdge(1366,120));
+  ok("a stale x leaves a visible gap",Math.abs(rightEdge(1366,200)-rightEdge(1366,120))===80,
+    "80 pixels of daylight for a 80px width difference");
+}
+
+// ---------- arranging the toolbars ----------
+G("Arranging the bars");
+{
+  /* Built because I moved buttons three times to solve reachability -- Select, Select all,
+     Undo -- and each time rearranged a bar someone had learned, including splitting Undo
+     from Redo, a pair that has always been adjacent. Where a button sits is a preference
+     and was never mine to set. */
+  ok("a button can be pinned or unpinned",/function togglePin/.test(srcAll));
+  ok("and moved along the bar",/function moveCmd/.test(srcAll));
+  ok("a long press offers both",/function openArrange/.test(srcAll));
+  ok("after showing the name first",/hold2=setTimeout/.test(srcAll),
+    "holding to check what a button is must not be punished with a menu");
+  ok("and dragging moves it directly",/function startArrangeDrag/.test(srcAll));
+  /* The user's choice shadows the built-in defaults rather than replacing them. */
+  const pf=codeOf("pinnedFor");
+  ok("a personal pin list wins",/PINNED_USER&&PINNED_USER\[n\]/.test(pf));
+  ok("but the defaults still describe what should be reachable",/return PINNED\[n\]/.test(pf),
+    "so a fresh install still has Select and Undo out of the scroll");
+  ok("the bar reads the effective list, not the constant",
+    /const pinned=pinnedFor\(n\)/.test(srcAll));
+  /* Persistence, and surviving a stale id. */
+  ok("saved with the workspace",/pinnedUser:PINNED_USER/.test(codeOf("uiState")));
+  ok("a stored id that no longer exists is dropped",
+    /list\.filter\(id=>CMD\[id\]&&CMD\[id\]\.bar===n\)/.test(srcAll),
+    "the pin list decides placement, so a bad id would lose a button entirely");
+  /* Dragging rebuilds the bar, which destroys the element being dragged. */
+  ok("the dragged button is found again after a rebuild",
+    /const fresh=document\.querySelector\("#bar"\+adrag\.n/.test(srcAll),
+    "buildBars replaces every button, so a held reference goes stale");
+  ok("a small movement is not a drag",/<6\)return/.test(srcAll));
+  /* Getting out. */
+  ok("a canvas tap ends arranging",/if\(arrangeMode\)\{arrangeMode=false/.test(srcAll));
+  ok("the menu is a blocking dialog",/"arrayDlg","arrangePop"/.test(srcAll));
+  ok("and closeBlockingModals closes it",/closeArrange\(\);/.test(srcAll));
+  ok("pinning says what happened",/it stays visible however far the bar scrolls/.test(srcAll),
+    "the button vanishes from where it was, which without a word reads as losing it");
+  /* Undo and Redo, the pair I split. */
+  ok("Undo and Redo are pinned together by default",/"undo","redo"/.test(srcAll),
+    "a command that belongs to a pair moves with its pair, or not at all");
+}
+
+// ---------- shortcuts an operating system may take ----------
+G("Alternative key bindings");
+{
+  /* Cmd+A does nothing on an iPad with a keyboard. The handler is correct and fires in
+     testing, with the default prevented -- iPadOS claims the chord and no keydown arrives.
+     Ten commands sit behind Cmd chords for the obvious reason: they are the familiar ones.
+     Each gains an alternative that nothing reserves. */
+  ok("there are alternative bindings",/const ALT_KEYS=\{/.test(srcAll));
+  const alts=Object.fromEntries([...((/const ALT_KEYS=\{[\s\S]*?\}/.exec(srcAll)||[""])[0])
+    .matchAll(/(\w+):"([a-z+]+)"/g)].map(m=>[m[1],m[2]]));
+  ok("Select all has one",alts.selall==="shift+q",alts.selall);
+  ok("and so do the other reserved chords",Object.keys(alts).length>=8,
+    Object.keys(alts).length+" commands");
+  /* Chosen by checking, not by association. */
+  const defaults=new Set([...srcAll.matchAll(/def:"([^"]+)"/g)].map(m=>m[1]).filter(Boolean));
+  const clashes=Object.entries(alts).filter(([,k])=>defaults.has(k));
+  ok("none collides with a primary binding",!clashes.length,
+    clashes.map(([c,k])=>c+"="+k).join(", ")+
+    " \u2014 shift+a, shift+s and shift+o were my first picks and all three were taken");
+  const seen={},dupes=[];
+  Object.entries(alts).forEach(([c,k])=>{if(seen[k])dupes.push(k);seen[k]=c;});
+  ok("and none collides with another alternative",!dupes.length,dupes.join(", "));
+  /* Added after the primaries, into gaps only. */
+  const rb=codeOf("rebuildMap");
+  ok("a user's own binding always wins",
+    rb.indexOf("for(const id in KEYS)")<rb.indexOf("for(const id in ALT_KEYS)"),
+    "alternatives are defaults, not overrides");
+  ok("an alternative never displaces a real binding",/if\(KEYMAP\[alt\]\)\{/.test(rb));
+  ok("and a skipped one is logged, not swallowed",/is taken by/.test(rb),
+    "silence would leave the command looking fixed while it still has only a reserved chord");
+  /* Ctrl and Cmd already substitute for each other. */
+  ok("Ctrl substitutes for Cmd",/id=KEYMAP\["meta\+"\+ks\.slice\(5\)\]/.test(srcAll));
+}
+
 // ---------- the way out must always be reachable ----------
 G("Pinned commands");
 {
@@ -789,6 +979,13 @@ G("Pinned commands");
   /* Third report of the same shape in one session: Select unreachable, the top button of a
      floating bar unreachable, and no way to Select all. The rule worth holding is that a
      command which is the only way OUT of a state must not live in a scrolling list. */
+  /* Undo and Redo pinned TOGETHER. Pinning Undo alone put it across a divider from Redo,
+     splitting a pair that has always been adjacent — you reach for one and the other is not
+     beside it, which is worse than either position on its own. A command that belongs to a
+     pair moves with its pair, or not at all. */
+  ok("Undo and Redo stay adjacent",/"undo","redo"/.test(srcAll),
+    "reaching for one and not finding the other is worse than either position alone");
+  ok("and Undo still comes first",srcAll.indexOf('"undo","redo"')>0);
   ok("Select all is pinned",/2:\["selall"/.test(srcAll),
     "it was behind Cmd+A, and an iPad has no Cmd key");
   ok("Select is pinned",/PINNED=\{1:\["select"\]/.test(srcAll),
@@ -805,7 +1002,9 @@ G("Pinned commands");
   ok("a floating bar keeps it visible below the list",
     /\.bar\.float \.pin\{[^}]*border-top/.test(css),
     "the list scrolls above it; the pin does not");
-  ok("each bar pins its own",/PINNED\[n\]\|\|\[\]/.test(codeOf("buildBars")),
+  /* buildBars now calls pinnedFor(n), which consults the user's list first. The default
+     lookup moved into that function. */
+  ok("each bar pins its own",/const pinned=pinnedFor\(n\)/.test(codeOf("buildBars")),
     "Select is on bar 1 and Undo on bar 2");
   /* The long press is the stronger guarantee: a gesture on the canvas is reachable wherever
      you are, and cannot scroll away, be collapsed, or be hidden behind a floating panel. */
@@ -1371,7 +1570,9 @@ G("Array");
   ok("the bounding box is built from objBBox",/objBBox\(o\)/.test(codeOf("openArrayDlg")),
     "selectionBBox does not exist \u2014 the second helper I invented today");
   /* Dismissable, which three dialogs were not until 3.21.2. */
-  ok("it is listed as a blocking dialog",/"arrayDlg"\]/.test(srcAll));
+  /* Matched on membership, not on being last: adding arrangePop displaced it and failed a
+     test about untouched code. Third positional assertion to break this way today. */
+  ok("it is listed as a blocking dialog",/BLOCKING_MODALS=\[[^\]]*"arrayDlg"/.test(srcAll));
   ok("and closeBlockingModals closes it",
     /if\(\$\("arrayDlg"\)\.classList\.contains\("open"\)\)closeArrayDlg\(\)/.test(srcAll));
   ok("there is a help entry",/i:"array-repeat"/.test(srcAll));

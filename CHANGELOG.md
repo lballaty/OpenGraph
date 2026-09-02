@@ -4,6 +4,170 @@ The **This build** line in Settings → About is a hash of the file's own conten
 Two copies showing the same one are the same file. Use it to tell builds apart —
 the version number alone will not, since several ship on the same date.
 
+## 3.53.1 — 2026-09-01 · build `a530cd88`
+
+### Undo and Redo are back together
+Pinning Undo in 3.48.0 put it on the far side of a divider from Redo, splitting a pair
+that has always been adjacent. Reaching for one and not finding the other beside it is
+worse than either position on its own, and I did it without noticing.
+
+Both pinned now, Undo first.
+
+### The rule I should have followed
+A command that belongs to a pair moves **with its pair, or not at all**. Undo/Redo,
+Group/Ungroup, Front/Back, Trim/Extend read as couples on the bar and are used as
+couples.
+
+`checks.js` enforces it: any pair with one member pinned and the other not is refused.
+Verified by splitting them again in a copy — it names `undo/redo`.
+
+Writing that check, my first version referenced a variable declared further down the
+file and **threw before any check ran** — a dead-zone error in the very file whose job
+is catching mistakes. The second version listed a `selnone` command that does not
+exist, and reported a split that was its own invention. Both fixed; the check now
+requires both halves of a pair to be real commands before calling anything split.
+
+### And the answer before this one was about the wrong thing
+You reported the button order changing; I replied about node counting. That was my
+error, not a disagreement.
+
+851 tests.
+
+## 3.54.1 — 2026-09-01 · build `41bc5a42`
+
+### A standing bar came back away from the edge
+`fitBar` measures the buttons and resets the bar's width — and the saved `x` was chosen
+for the **old** width, so a bar flush against the right edge came back inboard by the
+difference. A width 80 pixels narrower leaves 80 pixels of daylight.
+
+Two parts to it:
+
+- **x is re-derived after fitting.** `vertX` already returns the correct edge for the
+  side the bar parks on, allowing for the handedness setting. It existed and `fitBar`
+  simply never called it.
+- **Standing bars are now fitted on load**, not only on resize. Their size was saved for
+  the button set of the moment — and buttons have been added since, several of them
+  today — so a bar kept a stale size with a position derived from a different one. On the
+  next frame, because a bar has no measurable width until it is laid out.
+
+875 tests.
+
+## 3.55.0 — 2026-09-01 · build `88465a46`
+
+### Bars remember where you put them, per orientation
+One x and one y meant rotating **clamped** them to fit the new shape and overwrote your
+choice — so the position was destroyed on the way out, not on the way back, and rotating
+home found the clamped number.
+
+Two slots now, one per orientation, with the size as well: a standing bar fitted for
+landscape is the wrong height for portrait, and a position without its size lands in the
+right place at the wrong shape.
+
+### Dragging a symbol out of the panel was broken
+The gate that separates a drag from a list scroll was `|dy| > |dx|` — so **any** gesture
+aimed below the symbol was discarded as a scroll. From a panel down the side of the
+screen, most of the sheet is below.
+
+It is a cone now, two and a half to one: a flick up or down the list still scrolls,
+anything aimed at the paper is a drag. A finger also curves, and the first few pixels of
+a real gesture are rarely the direction intended.
+
+### The panel shows the symbols
+A name tells you what someone called it. A thumbnail tells you what it **is**, and a set
+of thirty schematic parts is unusable from names alone.
+
+Drawn with the same `drawEntity` the sheet uses, at twice the size for sharpness, scaled
+to each symbol's own extent. Using the real renderer rather than a second one, because a
+separate preview would slowly come to disagree with what actually gets placed.
+
+### The Place button is gone
+Asked directly: why have it, when the row can be tapped and dragged? No good answer. The
+**row** arms the symbol; dragging places it directly. A tap on Rename or Delete inside
+the row does not arm, which is the only reason the button had any claim.
+
+### And whether the panel closes is your choice
+**Keep the panel open while placing**, on the panel itself rather than buried in
+Settings — one symbol wants the panel gone, thirty want it to stay, and it changes with
+what you are doing.
+
+### A fault that would have thrown on the first symbol
+`row.append(nm,dim,place)` outlived the definition of `place`. The syntax check cannot
+see an undefined name and the harness only caught it because it renders a real symbol.
+
+907 tests.
+
+## 3.54.0 — 2026-09-01 · build `12f247aa`
+
+### Undo and Redo were split, and that was my doing
+Pinning Undo in 3.48.0 put it on the far side of a divider from Redo — a pair that has
+always been adjacent. You reach for one and the other is not beside it, which is worse
+than either position on its own.
+
+They are pinned **together** now. The rule this should have followed from the start: a
+command that belongs to a pair moves with its pair, or not at all.
+
+### And the arrangement is yours now
+I have moved buttons three times this session to solve reachability — Select, Select
+all, Undo — and each time rearranged a bar someone had learned, without saying so. Where
+a button sits is a preference and was never mine to set.
+
+**Long press any toolbar button:**
+
+- **Pin** — it stays visible however far the bar scrolls
+- **Unpin** — back into the scrolling list
+- **Move earlier / Move later** — one step along the bar
+- **Drag to rearrange** — then drag buttons freely; tap the canvas when done
+
+The name still appears first on a long press, because holding to check what a button is
+remains the common case and must not be punished with a menu. The arrange menu comes a
+moment later.
+
+Your choices are saved with the workspace and **shadow** the built-in defaults rather
+than replacing them, so a fresh install still has Select and Undo out of the scroll.
+A stored id for a command that no longer exists is discarded — the pin list also decides
+placement, so a stale one would lose a button entirely.
+
+### Two things the tests caught
+A dragged button is destroyed and recreated by every rebuild, so it is found again by
+its command id rather than held by reference.
+
+And I wrote a comment claiming the pinned area follows the order of the `PINNED` array.
+It does not — it follows the bar order. The test output said so and the comment is
+corrected.
+
+868 tests.
+
+## 3.53.0 — 2026-09-01 · build `7d40abb3`
+
+### Cmd+A does nothing on an iPad, and it is not the app
+Corrected: an iPad **does** have Cmd with a hardware keyboard. The handler is right —
+in testing, `Cmd+A` selects everything and prevents the default, with focus on the
+canvas or on a toolbar button. **iPadOS claims the chord and no keydown reaches the
+page.**
+
+Ten commands sit behind Cmd chords for the obvious reason: they are the familiar ones.
+Each now has a **second binding that nothing reserves**:
+
+| | | |
+|---|---|---|
+| Select all | `Cmd+A` | **`Shift+Q`** |
+| Undo · Redo | `Cmd+Z` · `Cmd+Shift+Z` | **`U`** · **`Y`** |
+| Copy · Paste · Cut | `Cmd+C` · `Cmd+V` · `Cmd+X` | **`Shift+C`** · **`Shift+V`** · **`Shift+X`** |
+| Save · Open · Print | `Cmd+S` · `Cmd+O` · `Cmd+P` | **`Shift+W`** · **`Shift+I`** · **`Shift+P`** |
+| Group | `Cmd+G` | **`Shift+N`** |
+
+The primaries stay, because on a desktop they are what anyone tries first. Alternatives
+are **defaults, not overrides**: a binding you have set yourself always wins, and an
+alternative is never allowed to displace a real one.
+
+### Three of my first picks were already taken
+`Shift+A`, `Shift+S` and `Shift+O` — by Array, Resize and Offset. The collision guard
+would have skipped them **in silence**, which for Select all means the reported problem
+persists behind a fix that looks applied. A skipped alternative is now logged, and a
+test checks every one against the primaries.
+
+849 tests.
+
 ## 3.52.0 — 2026-09-01 · build `8dea5d94`
 
 ### Select all had no route on a tablet

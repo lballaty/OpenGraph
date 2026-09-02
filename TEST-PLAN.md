@@ -1,6 +1,6 @@
 # Test plan
 
-Generated from `index.html` — version **3.52.0**, build **`8dea5d94`**.
+Generated from `index.html` — version **3.55.0**, build **`88465a46`**.
 Regenerate with `node testplan.js index.html > TEST-PLAN.md` after any change.
 
 Automated coverage is in `tests.js` (`node tests.js`). Everything below needs a real
@@ -285,6 +285,7 @@ stays open deliberately).
 | Copy as text | button | tap it; it acts and does not throw |  |
 | Paste from text | button | tap it; it acts and does not throw |  |
 | Close | button | tap it; it acts and does not throw |  |
+| `symStay` | checkbox | toggle both ways; the drawing follows |  |
 | `symName` | text | typing applies; empty is handled |  |
 | `libSelect` | select | every option selects and takes effect |  |
 

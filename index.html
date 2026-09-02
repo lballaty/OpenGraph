@@ -499,10 +499,14 @@
     opacity:0;pointer-events:none;transition:opacity .15s,transform .15s;max-height:60dvh;overflow-y:auto}
   /* Appears where you pressed, not centred: a menu summoned by a long press belongs under
      the finger that summoned it. Positioned in script, so only the look is here. */
+  #arrangePop,
   #quickPop{position:fixed;z-index:28;display:none;flex-direction:column;gap:4px;
     background:var(--panel);border:1px solid var(--hair);border-radius:9px;padding:6px;
     box-shadow:0 12px 32px rgba(0,0,0,.45);min-width:150px}
-  #quickPop.open{display:flex}
+  /* A button being arranged looks different, or there is no sign the mode is on. */
+  .bar button.arranging{outline:1px dashed var(--accent);outline-offset:-2px}
+  .bar button.dragging{opacity:.6;transform:scale(1.08)}
+  #arrangePop.open,#quickPop.open{display:flex}
   #quickPop button{font:inherit;font-size:12px;text-align:left;background:var(--panel2);
     color:var(--txt);border:1px solid var(--hair);border-radius:6px;padding:9px 11px;
     min-height:38px;cursor:pointer}
@@ -1160,6 +1164,7 @@
     <button class="t mini" id="libNew">New set</button>
   </div>
   <div id="symList"></div>
+  <label class="chk" style="margin:4px 0"><input type="checkbox" id="symStay"> Keep the panel open while placing</label>
   <p class="note" id="symNote"></p>
   <div class="segrow" style="margin-top:6px">
     <button id="symEdit">Edit library</button>
@@ -1187,6 +1192,7 @@
   <div class="btns"><button class="t mini" id="gpUniform">Lock X and Y</button><button class="t mini" id="gpMore">More settings</button></div>
 </div>
 
+<div id="arrangePop" role="dialog" aria-label="Arrange button"></div>
 <div id="quickPop" role="dialog" aria-label="Quick commands"></div>
 
 <div id="viewPop" role="dialog" aria-label="View">
@@ -1358,7 +1364,7 @@ const S = {
   undoSteps:25,
   ortho:false, polar:false, pinc:15,
   showDelta:false, showGrid:true, showArea:false, gridInSvg:true, scrollPan:MACISH, segMode:false,
-  hideBuild:false,
+  hideBuild:false, symStay:false,
   sel:[]
 };
 
@@ -7838,8 +7844,8 @@ const LIB_PREFIX="dg:lib:";   // one key per named library, so sets stay separab
    you have to remember -- and several builds shipped on the same date anyway, so neither
    answered "which copy am I looking at". A content hash cannot drift: two files showing
    the same one ARE the same file. */
-const APP_NAME="Drafting Grid", APP_VERSION="3.52.0", APP_BUILD="2026-08-29";
-const APP_HASH="8dea5d94";
+const APP_NAME="Drafting Grid", APP_VERSION="3.55.0", APP_BUILD="2026-08-29";
+const APP_HASH="88465a46";
 const AUTO_KEY="dg:auto";
 const APP_DOC="drafting-grid";
 const LAYER_APP="drafting-grid-layer";   // one layer and its contents, as a file
@@ -9384,10 +9390,15 @@ function symDragMove(e){
   if(!dragSym.live){
     const dx=e.clientX-dragSym.from.x, dy=e.clientY-dragSym.from.y;
     if(Math.hypot(dx,dy)<8)return;
-    /* Direction decides. A mostly-vertical movement in a scrollable list is a scroll, not
-       a drag, so the gesture is handed back to the browser -- otherwise the first thing
-       anyone does in a long list is accidentally drag a symbol onto the sheet. */
-    if(Math.abs(dy)>Math.abs(dx)){dragSym=null;return;}
+    /* A scroll is a NEARLY VERTICAL movement, not merely a mostly-vertical one. The test
+       used to be |dy| > |dx|, which threw away every drag aimed below the symbol -- and
+       from a panel down the side of the screen, most of the sheet is below. A steep
+       down-left drag towards the paper was read as a scroll and abandoned.
+
+       Two and a half to one, so a deliberate flick up or down the list still scrolls while
+       anything aimed at the sheet is a drag. A finger also curves: the first few pixels of
+       a real gesture are rarely the direction intended, which the wider cone forgives. */
+    if(Math.abs(dy)>Math.abs(dx)*2.5){dragSym=null;return;}
     dragSym.live=true;
     $("symbols").style.opacity="0.55";
     note("Drop it on the sheet.");
@@ -9841,7 +9852,50 @@ function toggleSymbols(open){
   $("symbols").classList.toggle("open",on);
   if(on)requestAnimationFrame(()=>restorePanel("symbols",$("symbols")));
   document.querySelector('[data-cmd="symbols"]')?.classList.toggle("on",on);
-  if(on)refreshSymbols();
+  if(on){if($("symStay"))$("symStay").checked=!!S.symStay;refreshSymbols();}
+}
+/* One thumbnail. Reuses the real drawing code by pointing the module-level view and
+   canvas references at a temporary pair, then putting them back -- ugly, and the honest
+   alternative is a second renderer that slowly disagrees with the first. */
+const THUMB=40;
+function symThumb(sym){
+  if(!sym||!Array.isArray(sym.items)||!sym.items.length)return null;
+  const c=document.createElement("canvas");
+  c.width=THUMB*2;c.height=THUMB*2;          // drawn at 2x so it is sharp on any screen
+  c.style.cssText="width:"+THUMB+"px;height:"+THUMB+"px;flex:0 0 auto;border-radius:4px;"+
+    "background:#fbfaf6;border:1px solid var(--hair)";
+  const g=c.getContext("2d");
+  if(!g)return null;
+  /* The symbol's own extent, so it fills the box whatever size it is in the drawing. */
+  let mnx=Infinity,mny=Infinity,mxx=-Infinity,mxy=-Infinity;
+  const scan=list=>list.forEach(o=>{
+    const b=objBBox(o);if(!b)return;
+    mnx=Math.min(mnx,b.mnx);mny=Math.min(mny,b.mny);
+    mxx=Math.max(mxx,b.mxx);mxy=Math.max(mxy,b.mxy);
+  });
+  scan(sym.items);
+  if(!isFinite(mnx))return null;
+  const w=Math.max(mxx-mnx,1e-6), h=Math.max(mxy-mny,1e-6);
+  const pad=6;
+  const z=Math.min((THUMB*2-pad*2)/w,(THUMB*2-pad*2)/h);
+  /* Only the VIEW is swapped. drawEntity takes its context as an argument and reads nothing
+     else global except S.view through toS() -- so ctx never needs touching, which is just
+     as well since it is a const and my first attempt at reassigning it would not have
+     parsed. W and H are only used by the sheet and grid, neither of which is drawn here. */
+  const savedView=S.view, savedW=W, savedH=H;
+  try{
+    S.view={zoom:z,cx:(mnx+mxx)/2,cy:(mny+mxy)/2};
+    W=THUMB*2;H=THUMB*2;
+    g.lineJoin="round";g.lineCap="round";
+    sym.items.forEach(o=>{try{drawEntity(g,o,false);}catch(err){}});
+  }catch(err){
+    return null;
+  }finally{
+    /* Always restored. A thumbnail that threw halfway through could otherwise leave the app
+       looking at a 40-pixel view, which would be a spectacular failure for decoration. */
+    S.view=savedView;W=savedW;H=savedH;
+  }
+  return c;
 }
 function refreshSymbols(){
   const box=$("symList");
@@ -9864,19 +9918,40 @@ function refreshSymbols(){
     : "";
   symbols.forEach((sym,i)=>{
     const row=document.createElement("div");row.className="lay";
+    /* A picture of the symbol, which the list did not have. A name tells you what someone
+       called it; a thumbnail tells you what it IS, and a set of thirty schematic parts is
+       unusable from names alone.
+
+       Drawn with the same drawEntity the sheet uses, into a small canvas with its own
+       transform -- so a thumbnail cannot drift from what actually gets placed, which a
+       separate preview renderer would eventually do. */
+    const thumb=symThumb(sym);
+    if(thumb)row.appendChild(thumb);
     const nm=document.createElement("div");nm.className="nm";
     nm.textContent=sym.name;
     // real-world size, since that is what decides whether a symbol suits the drawing
     const dim=document.createElement("span");
     dim.style.cssText="font-family:var(--mono);font-size:10px;color:var(--dim);white-space:nowrap";
     dim.textContent=sym.w!==undefined?fmtBig(sym.w*uf())+" \u00d7 "+fmtBig(sym.h*uf()):"";
-    const place=document.createElement("button");place.textContent="Place";
-    place.onclick=()=>{
+    /* The ROW arms the symbol. A separate Place button was a second target for the thing the
+       row is already about -- asked directly: why have it, when the row can be tapped and
+       dragged? So the row is the control and Place is gone. Dragging places directly;
+       tapping arms it for the next tap on the sheet. Both existed already; only the button
+       in between was surplus. */
+    const arm=()=>{
       pendingSymbol=i;
-      toggleSymbols(false);
+      if(!S.symStay)toggleSymbols(false);
       if(S.tool==="select")setTool("line");   // any drawing tool routes taps through commit()
-      note("Tap where “"+sym.name+"” should go. Esc to cancel.");
+      note("Tap where “"+sym.name+"” should go."+
+        (S.symStay?" The panel stays open.":"")+" Esc to cancel.");
       draw();
+    };
+    row.style.cursor="pointer";
+    row.onclick=ev=>{
+      /* Not when the tap landed on a control inside the row -- Rename and Delete live there
+         too, and arming on the way past would be worse than an extra button. */
+      if(ev.target.closest("button"))return;
+      arm();
     };
     /* Delete used to sit here, one tap from Place, with no confirmation, destroying a
        library entry rather than anything in the drawing. Placing a symbol is something you
@@ -9894,7 +9969,10 @@ function refreshSymbols(){
       if(ev.target.closest("button"))return;
       dragSym={i,id:ev.pointerId,from:{x:ev.clientX,y:ev.clientY},live:false};
     });
-    row.append(nm,dim,place);
+    /* nm and dim only. The Place button that used to sit here is gone -- and it was still
+       being appended after I removed its definition, which would have thrown on the first
+       symbol drawn. Caught by looking; the syntax check cannot see an undefined name. */
+    row.append(nm,dim);
     if(symEditing){
       const ren=document.createElement("button");ren.textContent="Rename";
       ren.onclick=async()=>{
@@ -10244,7 +10322,7 @@ $("fsExit").onclick=()=>{setImmersive(false);nativeFull(false);};
    straight on the live canvas and silently added geometry to the drawing, and every
    single-letter shortcut still fired underneath. Both are now closed off in one place;
    any overlay added later needs one line here and one in the touchmove allowlist. */
-const BLOCKING_MODALS=["panel","saveMenu","openMenu","saveAs","textIO","help","confirm","askval","boardDlg","scaleDlg","offsetDlg","arrayDlg"];
+const BLOCKING_MODALS=["panel","saveMenu","openMenu","saveAs","textIO","help","confirm","askval","boardDlg","scaleDlg","offsetDlg","arrayDlg","arrangePop"];
 const anyBlockingModal=()=>BLOCKING_MODALS.some(id=>$(id).classList.contains("open"));
 function syncScrim(){
   // The wide-screen layout docks Settings as a real column rather than an overlay, so
@@ -10326,6 +10404,11 @@ function closeBlockingModals(){
   if($("scaleDlg").classList.contains("open"))closeScaleDlg();
   if($("offsetDlg").classList.contains("open"))closeOffsetDlg();
   if($("arrayDlg").classList.contains("open"))closeArrayDlg();
+  if($("arrangePop").classList.contains("open"))closeArrange();
+  /* A tap on the canvas ends arranging. There is no separate Done button because the
+     drawing itself is the obvious place to tap when finished with the toolbar, and one
+     more button in a bar being rearranged would be in the way. */
+  if(arrangeMode){arrangeMode=false;buildBars();note("Buttons are set. Long press any one to change it again.");}
   syncScrim();
 }
 
@@ -10676,9 +10759,44 @@ CMDS.forEach(c=>{
 const nf=e=>e&&e.shiftKey?10:(e&&e.altKey?0.1:1);
 let KEYS={},KEYMAP={},capturing=null;
 function defaultKeys(){const o={};CMDS.forEach(c=>o[c.id]=c.def);return o;}
+/* A second binding for the commands whose first one an operating system may take before
+   the page ever sees it. Cmd+A is the case reported: the handler is correct and fires in
+   testing, but on iPadOS the chord is claimed by the system and no keydown arrives -- so
+   the only route was a button, in a list that scrolls.
+
+   Ten commands sit behind Cmd chords for exactly the reasons anyone would expect: they are
+   the familiar ones. Rather than move them, each gains an alternative that nothing
+   reserves. The primary stays, because on a desktop it is what people will try first.
+
+   These are defaults, not overrides: a binding the user has set for themselves always
+   wins, and an alternative is skipped if it would collide with anything. */
+/* Checked against the defaults rather than chosen by association: shift+a, shift+s and
+   shift+o were my first picks and all three were already taken -- by Array, Resize and
+   Offset. The guard below would have skipped them in silence, which for Select all means
+   the reported problem simply persists with a fix that looks applied. */
+const ALT_KEYS={
+  selall:"shift+q", copy:"shift+c", paste:"shift+v", cut:"shift+x",
+  undo:"u", redo:"y", save:"shift+w", open:"shift+i",
+  print:"shift+p", group:"shift+n"
+};
 function rebuildMap(){
   KEYMAP={};
   for(const id in KEYS){const k=KEYS[id];if(k)KEYMAP[k]=id;}
+  /* Added AFTER the primaries, and only into gaps: a user who has bound shift+a to
+     something else keeps it, and an alternative never displaces a real binding. */
+  for(const id in ALT_KEYS){
+    const alt=ALT_KEYS[id];
+    if(!CMD[id])continue;
+    if(KEYMAP[alt]){
+      /* Logged, not swallowed. A skipped alternative means the command still has only its
+         reserved chord, which is the fault this exists to fix -- silence would leave it
+         looking solved. */
+      logLine("alternative key "+alt+" for "+id+" is taken by "+KEYMAP[alt]+
+        "; that command keeps only its primary binding","warn");
+      continue;
+    }
+    KEYMAP[alt]=id;
+  }
   document.querySelectorAll("[data-cmd]").forEach(b=>{
     const c=CMD[b.dataset.cmd];b.title=c.lbl+(KEYS[c.id]?"  ["+prettyKey(KEYS[c.id])+"]":"");});
 }
@@ -10894,6 +11012,7 @@ const HOWTO=[
  {t:"Why has autosave stopped",i:"autosave-limit",k:"autosave stopped not saving too large standing down storage full limit",w:"A drawing over 1.5MB is too large for autosave — save to a file instead. Settings → Autosave says so",c:"save"},
  {t:"The app is open in several tabs",i:"several-tabs",k:"tabs tab two several many shared storage last save wins conflict overwrite",w:"They share one storage, so the last to save wins. Close the others, or keep to one tab",c:null},
  {t:"Bring something in front of or behind",i:"order-depth",k:"front back forward backward depth order stack on top underneath behind hidden covered",w:"Select it, then To front or To back on the bottom bar",c:"front"},
+ {t:"Move or pin the toolbar buttons",i:"arrange-bars",k:"arrange rearrange reorder move buttons toolbar pin unpin order customise customize layout position drag button somewhere else always visible",w:"Long press any toolbar button — pin it so it never scrolls away, move it along the bar, or choose Drag to rearrange and drag buttons around",c:null},
  {t:"See the radius or diameter of a circle",i:"circle-size",k:"radius diameter circle arc round hole bore size how big width across r d dia ø sweep angle",w:"Select it — the Radius cell in the bottom bar shows R and Ø, and the included angle for an arc",c:null},
  {t:"Repeat something at a spacing",i:"array-repeat",k:"array repeat rows and columns row column grid pattern duplicate many copies several spacing evenly spaced fence posts desks rungs studs tiles paving series line of",w:"Select it, then Array on the bottom bar",c:"array"},
  {t:"Offset — make a parallel copy at a set distance",i:"offset-parallel",k:"offset parallel copy alongside inset outset clearance second face wall thickness margin duplicate",w:"Select it, then tap the Offset button on the Edit bar",c:"offset"},
@@ -11362,12 +11481,25 @@ function resetBarOrder(){
    recovery actions in that sense: without them you cannot get out of where you are.
 
    Four on bar 2 is wide, and worth it. Nothing else is being added. */
-const PINNED={1:["select"],2:["selall","undo","settings","keys"]};
+/* Undo and Redo are pinned TOGETHER. Pinning Undo alone put it on the far side of a
+   divider from Redo, splitting a pair that has always been adjacent -- you reach for one
+   and the other is no longer beside it, which is worse than either position on its own.
+
+   The rule this should have followed: a command that belongs to a pair moves with its
+   pair, or not at all. Undo/Redo, Group/Ungroup, Front/Back, Trim/Extend all read as
+   couples on the bar and are used as couples.
+
+   Order within the pinned area follows the BAR order, not the order of this array -- the
+   buttons are appended as orderedCmds yields them and merely routed to a different
+   container. I wrote a comment claiming otherwise and the test output contradicted it.
+   Undo still precedes Redo because it does so on the bar, which is the thing that
+   matters and now the thing anyone can change. */
+const PINNED={1:["select"],2:["selall","undo","redo","settings","keys"]};
 function buildBars(){
   [1,2].forEach(n=>{
     const items=document.querySelector("#bar"+n+" .items");items.innerHTML="";
     const pin=document.querySelector("#bar"+n+" .pin");if(pin)pin.innerHTML="";
-    const pinned=PINNED[n]||[];
+    const pinned=pinnedFor(n);
     orderedCmds(n).filter(c=>!isHidden(c.id)).forEach(c=>{
       const b=document.createElement("button");
       // Settings and Keys/? each open a persistent panel with no way to tell, from the
@@ -11391,8 +11523,9 @@ function buildBars(){
          icon-only column is unusable without a way to ask. The hold also suppresses the
          click it would otherwise become, so checking a button is never the same as
          pressing it. */
-      let hold=null,held=false;
-      const clearHold=()=>{clearTimeout(hold);hold=null;$("pressLabel").classList.remove("on");};
+      let hold=null,hold2=null,held=false;
+      const clearHold=()=>{clearTimeout(hold);clearTimeout(hold2);hold=hold2=null;
+        $("pressLabel").classList.remove("on");};
       b.addEventListener("pointerdown",ev=>{
         held=false;
         hold=setTimeout(()=>{
@@ -11406,20 +11539,140 @@ function buildBars(){
           if(y<4)y=r.bottom+8;
           el.style.left=Math.max(4,Math.min(x,innerWidth-lw-4))+"px";
           el.style.top=y+"px";
+          /* The name first, then the menu a moment later. Holding to CHECK what a button is
+             remains the common case and must not be punished with a menu; holding on past
+             that is a deliberate act. */
+          hold2=setTimeout(()=>{clearHold();openArrange(b,c,n);},550);
         },450);
         if(ev.pointerType!=="mouse")ev.preventDefault();
       });
+      /* Arranging. A long press opens a menu for this button: pin it, unpin it, or move it
+         along the bar. Dragging it does the same thing directly.
+
+         Built because I have now moved buttons three times to solve reachability problems
+         -- Select, Select all, Undo -- and each time rearranged a bar someone had learned,
+         including splitting Undo from Redo. The position of a button is a preference, and
+         it should never have been mine to set. */
+      b.addEventListener("pointerdown",ev=>{
+        if(!arrangeMode)return;
+        startArrangeDrag(ev,b,c,n);
+      });
+      b.addEventListener("contextmenu",ev=>{ev.preventDefault();openArrange(b,c,n);});
       ["pointerup","pointerleave","pointercancel"].forEach(t=>
         b.addEventListener(t,()=>{setTimeout(clearHold,t==="pointerup"?900:0);}));
       b.onclick=ev=>{
         if(held){held=false;ev.preventDefault();ev.stopPropagation();return;}
         c.run();b.blur();
       };
+      b.dataset.cmd=c.id;
+      if(arrangeMode)b.classList.add("arranging");
       (pinned.includes(c.id)&&pin?pin:items).appendChild(b);
     });
   });
   rebuildMap();
 }
+/* ---------- arranging the bars ----------
+   A long press on any toolbar button offers to pin it or move it; dragging it moves it
+   directly. Both write barOrder and PINNED_USER, which persist with the workspace.
+
+   PINNED_USER shadows the built-in PINNED rather than replacing it, so the defaults still
+   describe what SHOULD be reachable while the person's own choice always wins. */
+let arrangeMode=false;
+let PINNED_USER=null;
+function pinnedFor(n){
+  if(PINNED_USER&&PINNED_USER[n])return PINNED_USER[n];
+  return PINNED[n]||[];
+}
+function setPinned(n,ids){
+  if(!PINNED_USER)PINNED_USER={1:(PINNED[1]||[]).slice(),2:(PINNED[2]||[]).slice()};
+  PINNED_USER[n]=ids;
+  saveUI();buildBars();
+}
+function togglePin(id,n){
+  const cur=pinnedFor(n).slice();
+  const i=cur.indexOf(id);
+  if(i>=0)cur.splice(i,1);else cur.push(id);
+  setPinned(n,cur);
+  /* Said, because the button vanishes from where it was and reappears elsewhere on the
+     bar, which without a word reads as it disappearing. */
+  note(i>=0?"Unpinned \u2014 it moves back into the scrolling list."
+           :"Pinned \u2014 it stays visible however far the bar scrolls.");
+}
+function moveCmd(id,n,delta){
+  const ids=orderedCmds(n).map(c=>c.id);
+  const i=ids.indexOf(id);
+  if(i<0)return;
+  const j=Math.max(0,Math.min(ids.length-1,i+delta));
+  if(j===i)return;
+  ids.splice(j,0,ids.splice(i,1)[0]);
+  barOrder=barOrder||{};
+  barOrder[n]=ids;
+  saveUI();buildBars();
+}
+function openArrange(btn,c,n){
+  const box=$("arrangePop");
+  box.innerHTML="";
+  const isPinned=pinnedFor(n).includes(c.id);
+  const h=document.createElement("div");h.className="qhead";h.textContent=c.lbl;
+  box.appendChild(h);
+  const add=(label,fn)=>{
+    const b=document.createElement("button");
+    b.textContent=label;
+    b.onclick=()=>{closeArrange();fn();};
+    box.appendChild(b);
+  };
+  add(isPinned?"\u2296  Unpin":"\u2295  Pin \u2014 always visible",()=>togglePin(c.id,n));
+  add("\u2190  Move earlier",()=>moveCmd(c.id,n,-1));
+  add("\u2192  Move later",()=>moveCmd(c.id,n,1));
+  add("\u21c4  Drag to rearrange",()=>{
+    arrangeMode=true;buildBars();
+    note("Drag any button to move it. Tap the canvas when you are done.");
+  });
+  box.classList.add("open");
+  const r=box.getBoundingClientRect(), br=btn.getBoundingClientRect();
+  box.style.left=Math.round(Math.max(4,Math.min(innerWidth-r.width-4,
+    br.left+br.width/2-r.width/2)))+"px";
+  box.style.top=Math.round(br.bottom+6>innerHeight-r.height-4
+    ? Math.max(4,br.top-r.height-6) : br.bottom+6)+"px";
+  syncScrim();
+}
+function closeArrange(){$("arrangePop").classList.remove("open");syncScrim();}
+/* Dragging. The button follows the finger and the others part around it, which is the
+   only arrangement gesture anyone expects on a tablet. */
+let adrag=null;
+function startArrangeDrag(ev,btn,c,n){
+  const host=btn.parentElement;
+  adrag={id:c.id,n,btn,host,x:ev.clientX,y:ev.clientY,moved:false};
+  btn.setPointerCapture(ev.pointerId);
+  btn.classList.add("dragging");
+  ev.preventDefault();
+}
+addEventListener("pointermove",ev=>{
+  if(!adrag)return;
+  if(!adrag.moved&&Math.hypot(ev.clientX-adrag.x,ev.clientY-adrag.y)<6)return;
+  adrag.moved=true;
+  /* The button under the pointer decides the position: simpler and more predictable than
+     measuring gaps, and it works the same whether the bar is a row or a wrapped column. */
+  const over=document.elementFromPoint(ev.clientX,ev.clientY);
+  const tgt=over&&over.closest&&over.closest("button");
+  if(!tgt||tgt===adrag.btn||tgt.parentElement!==adrag.host)return;
+  const ids=orderedCmds(adrag.n).map(x=>x.id);
+  const from=ids.indexOf(adrag.id), to=ids.indexOf(tgt.dataset.cmd);
+  if(from<0||to<0||from===to)return;
+  ids.splice(to,0,ids.splice(from,1)[0]);
+  barOrder=barOrder||{};barOrder[adrag.n]=ids;
+  buildBars();
+  /* buildBars replaces every button, so the one being dragged no longer exists. Found
+     again by its command id rather than kept by reference. */
+  const fresh=document.querySelector("#bar"+adrag.n+' [data-cmd="'+adrag.id+'"]');
+  if(fresh){adrag.btn=fresh;adrag.host=fresh.parentElement;fresh.classList.add("dragging");}
+});
+["pointerup","pointercancel"].forEach(t=>addEventListener(t,()=>{
+  if(!adrag)return;
+  if(adrag.btn)adrag.btn.classList.remove("dragging");
+  if(adrag.moved)saveUI();
+  adrag=null;
+}));
 function applyBar(n){
   const el=$("bar"+n),B=BARS[n];
   el.classList.toggle("float",B.float);
@@ -11524,7 +11777,18 @@ function fitBar(n){
   // Tall enough for every button, but never past the bottom of the sheet area.
   B.h=Math.max(80,Math.min(needH,Math.round(box.h)));
   B.y=Math.round(box.t);
+  /* x re-derived from the NEW width, which is the whole bug on reload. fitBar measures the
+     buttons and resets B.w -- and the saved x was chosen for the old width, so a bar that
+     was flush against the right edge ended up sitting inboard by the difference, which is
+     exactly the "shifts away from the side" report.
+
+     vertX already answers this: it returns the left edge or right-edge-minus-width for the
+     side the bar parks on. It existed and fitBar simply never called it. */
+  B.x=vertX(n);
   applyBar(n);
+  /* A fit is a deliberate sizing, so it becomes the remembered place for this orientation
+     -- otherwise the next rotation would restore a slot from before the fit and undo it. */
+  rememberBarPlace(n);
 }
 function iconBar(n){
   const B=BARS[n];
@@ -11604,6 +11868,9 @@ function floatBar(n,on){
     // docked bar's single control still does the obvious thing.
     if(!gripMoved&&wasDocked){floatBar(n,false);collapseBar(n);}
     wasDocked=false;
+    /* Recorded against THIS orientation, on drop. Where you put a bar in landscape is
+       kept for landscape however it gets clamped in portrait afterwards. */
+    rememberBarPlace(n);
     saveUI();
   };
   grip.addEventListener("pointerdown",down);grip.addEventListener("pointermove",move);
@@ -11654,7 +11921,8 @@ function uiState(){return{keys:KEYS,bars:BARS,fs:immersive,order:barOrder,icons:
   /* In the WORKSPACE rather than the drawing: whether you want to see the build number is
      about you and this browser, not about the sheet. Saving it in the document would carry
      your preference to anyone you sent the file to. */
-  hideBuild:S.hideBuild,panelPos:PANEL_POS};}
+  hideBuild:S.hideBuild,panelPos:PANEL_POS,pinnedUser:PINNED_USER,barPlace:barPlace,
+  symStay:S.symStay};}
 async function saveUI(){
   if(!hasStore)return;
   try{await STORE_WRAPPED.set(UI_KEY,JSON.stringify(uiState()),false);}catch(err){}
@@ -11669,6 +11937,29 @@ function applyUI(o){
   if(o.vertIcons!==undefined)S.vertIcons=!!o.vertIcons;
   if(o.vertSwap!==undefined)S.vertSwap=!!o.vertSwap;
   if(o.tplWorkspace!==undefined)S.tplWorkspace=!!o.tplWorkspace;
+  if(o.symStay!==undefined)S.symStay=!!o.symStay;
+  if(o.barPlace&&typeof o.barPlace==="object"){
+    /* Only the two known orientations, and only finite numbers: a stored NaN would put a
+       bar nowhere, and a bar you cannot see is worse than one in the wrong place. */
+    const ok=v=>v&&["x","y"].every(k=>typeof v[k]==="number"&&isFinite(v[k]));
+    ["land","port"].forEach(k=>{
+      const src=o.barPlace[k];
+      if(!src)return;
+      const dst={};
+      [1,2].forEach(n=>{if(ok(src[n]))dst[n]=src[n];});
+      if(Object.keys(dst).length)barPlace[k]=dst;
+    });
+  }
+  if(o.pinnedUser&&typeof o.pinnedUser==="object"){
+    /* Validated: a stored id that no longer exists would pin nothing and quietly lose a
+       button from the bar, since the pin list also decides where it is placed. */
+    const clean={};
+    [1,2].forEach(n=>{
+      const list=o.pinnedUser[n];
+      if(Array.isArray(list))clean[n]=list.filter(id=>CMD[id]&&CMD[id].bar===n);
+    });
+    if(Object.keys(clean).length)PINNED_USER={1:clean[1]||[],2:clean[2]||[]};
+  }
   if(o.panelPos&&typeof o.panelPos==="object"){
     /* Copied key by key rather than replacing the object, because restorePanel and
        rememberPanel both close over the original reference. */
@@ -11694,7 +11985,22 @@ function applyUI(o){
 }
 async function loadUI(){
   if(!hasStore)return;
-  try{await migrateLegacyKeys();const v=await STORE_WRAPPED.get(UI_KEY,false);if(v&&v.value)applyUI(JSON.parse(v.value));}catch(err){}
+  try{
+    await migrateLegacyKeys();
+    const v=await STORE_WRAPPED.get(UI_KEY,false);
+    if(v&&v.value)applyUI(JSON.parse(v.value));
+    /* Standing bars are re-fitted once here. Their width and height were saved for the
+       button set and screen of the moment they were saved -- and buttons have been added
+       since, and a tablet is rotated. fitBar was only ever called from a resize, so on load
+       a bar kept a stale size with a position derived from a different one, which is why the
+       right-hand bar came back short of the edge.
+
+       On the next frame, because the bar has no measurable width until it is laid out and
+       fitBar works by measuring its buttons. */
+    requestAnimationFrame(()=>{
+      [1,2].forEach(n=>{if(BARS[n]&&BARS[n].float&&BARS[n].vert)fitBar(n);});
+    });
+  }catch(err){}
 }
 
 /* ---------- tools & toggles state ---------- */
@@ -12012,6 +12318,15 @@ function setLogLevel(n,quiet){
    landed, leaving two buttons in Settings that did nothing. */
 $("folderPick").onclick=()=>chooseWorkFolder();
 $("folderClear").onclick=()=>clearWorkFolder();
+/* On the panel itself, not buried in Settings: it is a decision about THIS panel and it
+   changes depending on what you are doing -- one symbol wants the panel gone, thirty want
+   it to stay. Asked for directly, and right to ask. */
+$("symStay").onchange=e=>{
+  S.symStay=e.target.checked;
+  note(S.symStay?"The panel will stay open while you place symbols."
+                :"The panel will close when you pick a symbol.");
+  saveUI();
+};
 $("symEdit").onclick=()=>{
   symEditing=!symEditing;
   $("symEdit").classList.toggle("on",symEditing);
@@ -12979,9 +13294,39 @@ $("layerPopNewName").addEventListener("keydown",e=>{
   if(e.key==="Enter"){e.preventDefault();$("layerPopNewAdd").click();}
   if(e.key==="Escape"){e.preventDefault();toggleLayerPop(false);}
 });
+/* Where a bar sits, remembered PER ORIENTATION. One x and y meant a rotation clamped them
+   to fit the new shape and overwrote what you had chosen -- so the position was destroyed by
+   the trip out, not on the way back, and rotating home found the clamped number.
+
+   Two slots, keyed on which way up the screen is. What you set in landscape is kept for
+   landscape whatever you do in portrait. */
+const orientKey=()=>innerWidth>=innerHeight?"land":"port";
+let barPlace={};
+function rememberBarPlace(n){
+  const B=BARS[n];
+  if(!B.float)return;
+  barPlace[orientKey()]=barPlace[orientKey()]||{};
+  barPlace[orientKey()][n]={x:B.x,y:B.y,w:B.w,h:B.h,vert:!!B.vert};
+  saveUI();
+}
+function restoreBarPlace(n){
+  const slot=(barPlace[orientKey()]||{})[n];
+  if(!slot)return false;
+  const B=BARS[n];
+  B.x=slot.x;B.y=slot.y;
+  /* Size too: a standing bar fitted for one orientation is the wrong height for the other,
+     and restoring a position without its size puts the bar in the right place at the wrong
+     shape -- which reads as still being wrong. */
+  if(slot.w)B.w=slot.w;
+  if(slot.h)B.h=slot.h;
+  return true;
+}
 function reclampFloatingBars(){
   [1,2].forEach(n=>{
     const B=BARS[n];if(!B.float)return;
+    /* The slot for THIS orientation first, so the clamp below has the right numbers to work
+       from rather than the previous orientation's. */
+    restoreBarPlace(n);
     const el=$("bar"+n),r=el.getBoundingClientRect();
     const sb=stageBox();
     const nx=Math.max(sb.l-6,Math.min(B.x,sb.r-Math.min(80,r.width)));

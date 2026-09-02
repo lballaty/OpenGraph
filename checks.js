@@ -111,6 +111,28 @@ check("a canvas tap dismisses rather than being swallowed",
   /if\(anyBlockingModal\(\)\)\{closeBlockingModals\(\);return;\}/.test(src),
   "returning silently left no way to close by tapping");
 
+// --- a pinned command must not be split from its pair ------------------------
+/* Pinning Undo and leaving Redo in the list put them on opposite sides of a divider,
+ * splitting a pair that had always been adjacent. Reaching for one and not finding the
+ * other beside it is worse than either position on its own. A command that belongs to a
+ * pair moves with its pair, or not at all. */
+/* Comments stripped locally: srcNoComments is declared further down, and referencing it
+ * here threw before any check ran — a dead-zone error in the very file whose job is to
+ * catch mistakes. */
+const srcNC=src.replace(/\/\*[\s\S]*?\*\//g,"").replace(/\/\/[^\n]*/g,"");
+const pinnedM=/const PINNED=\{([\s\S]*?)\};/.exec(srcNC);
+const pinnedIds=new Set(pinnedM?[...pinnedM[1].matchAll(/"(\w+)"/g)].map(m=>m[1]):[]);
+const PAIRS=[["undo","redo"],["group","ungroup"],["front","back"],
+             ["forward","backward"],["trim","extend"],["copy","paste"]];
+const split=PAIRS.filter(([a,b])=>
+  /* Both must EXIST before being called a pair: an id that is not a command cannot be
+   * split from anything, and listing one made this check report a fault that was its own
+   * invention. */
+  src.includes('id:"'+a+'"')&&src.includes('id:"'+b+'"')&&
+  pinnedIds.has(a)!==pinnedIds.has(b));
+check("no pinned command is split from its pair",!split.length,
+  split.map(p=>p.join("/")).join(", ")+" — pin both or neither");
+
 // --- a scroll container must be able to shrink -------------------------------
 /* A flex child does not shrink below its content height unless min-height:0 permits it, so
  * overflow:auto on its own scrolls nothing: the child expands and the parent clips it. This
